@@ -36,13 +36,19 @@ func (h *WeChatHandler) VerifyURL(c *gin.Context) {
 	nonce := c.Query("nonce")
 	echostr := c.Query("echostr")
 
+	// Try self-built app keys first, then KF keys
+	aesKey := h.cfg.EncodingAESKey
 	if !wechat.VerifySignature(h.cfg.Token, timestamp, nonce, echostr, msgSign) {
-		c.String(http.StatusForbidden, "invalid signature")
-		return
+		if h.cfg.KFToken != "" && wechat.VerifySignature(h.cfg.KFToken, timestamp, nonce, echostr, msgSign) {
+			aesKey = h.cfg.KFEncodingAESKey
+		} else {
+			c.String(http.StatusForbidden, "invalid signature")
+			return
+		}
 	}
 
 	// Decrypt the echostr
-	plaintext, _, err := wechat.DecryptMessage(h.cfg.EncodingAESKey, echostr)
+	plaintext, _, err := wechat.DecryptMessage(aesKey, echostr)
 	if err != nil {
 		c.String(http.StatusBadRequest, "failed to decrypt echostr: %v", err)
 		return
