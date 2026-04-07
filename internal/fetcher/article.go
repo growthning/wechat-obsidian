@@ -90,7 +90,8 @@ func (f *Fetcher) FetchArticle(url string) (*ArticleResult, error) {
 
 	// Download images (up to maxImages)
 	now := time.Now()
-	datePrefix := now.Format("20060102")
+	// Use timestamp to make filenames unique across articles
+	imgPrefix := now.Format("20060102-150405")
 	var downloadedImages []string
 	imgCount := 0
 
@@ -109,7 +110,7 @@ func (f *Fetcher) FetchArticle(url string) (*ArticleResult, error) {
 
 		imgCount++
 		ext := imageExt(imgURL)
-		filename := fmt.Sprintf("img-%s-%03d%s", datePrefix, imgCount, ext)
+		filename := fmt.Sprintf("img-%s-%03d%s", imgPrefix, imgCount, ext)
 
 		if err := f.DownloadToFile(imgURL, filename); err == nil {
 			downloadedImages = append(downloadedImages, filename)
@@ -133,7 +134,7 @@ func (f *Fetcher) FetchArticle(url string) (*ArticleResult, error) {
 	}
 
 	// Fix image references to wiki-link format ![[filename]]
-	markdown = fixImageLinks(markdown, downloadedImages, datePrefix)
+	markdown = fixImageLinks(markdown, downloadedImages, imgPrefix)
 
 	// Generate frontmatter
 	date := now.Format("2006-01-02")
@@ -217,9 +218,9 @@ func (f *Fetcher) SaveFile(filename string, data []byte) error {
 
 // fixImageLinks replaces standard markdown image links with Obsidian wiki-link format.
 // It matches patterns like ![...](img-YYYYMMDD-NNN.ext) and replaces them with ![[filename]].
-func fixImageLinks(markdown string, downloadedImages []string, datePrefix string) string {
+func fixImageLinks(markdown string, downloadedImages []string, imgPrefix string) string {
 	// Replace markdown image links that point to our downloaded images
-	re := regexp.MustCompile(`!\[[^\]]*\]\((img-` + datePrefix + `-\d+\.[a-zA-Z]+)\)`)
+	re := regexp.MustCompile(`!\[[^\]]*\]\((img-` + imgPrefix + `-\d+\.[a-zA-Z]+)\)`)
 	return re.ReplaceAllStringFunc(markdown, func(match string) string {
 		sub := re.FindStringSubmatch(match)
 		if len(sub) < 2 {

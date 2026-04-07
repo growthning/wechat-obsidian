@@ -35,7 +35,10 @@ export default class WeChatSyncPlugin extends Plugin {
   startPolling(): void {
     this.stopPolling();
 
+    console.log("WeChat Sync: startPolling, serverUrl=" + this.settings.serverUrl + ", apiKey=" + (this.settings.apiKey ? "***" : "(empty)"));
+
     if (!this.settings.serverUrl || !this.settings.apiKey) {
+      console.log("WeChat Sync: no serverUrl or apiKey, polling disabled");
       return;
     }
 
@@ -75,6 +78,7 @@ export default class WeChatSyncPlugin extends Plugin {
     }
 
     this.syncing = true;
+    console.log("WeChat Sync: syncing, lastSyncedId=" + this.settings.lastSyncedId);
 
     try {
       const api = new ApiClient(this.settings.serverUrl, this.settings.apiKey);
@@ -83,6 +87,7 @@ export default class WeChatSyncPlugin extends Plugin {
       let hasMore = true;
       while (hasMore) {
         const response = await api.fetchMessages(this.settings.lastSyncedId);
+        console.log("WeChat Sync: fetched " + response.messages.length + " messages");
 
         if (response.messages.length === 0) {
           break;
