@@ -35,7 +35,7 @@ func (h *WeChatHandler) VerifyURL(c *gin.Context) {
 	nonce := c.Query("nonce")
 	echostr := c.Query("echostr")
 
-	if !wechat.VerifyURLSignature(h.cfg.Token, timestamp, nonce, msgSign) {
+	if !wechat.VerifySignature(h.cfg.Token, timestamp, nonce, echostr, msgSign) {
 		c.String(http.StatusForbidden, "invalid signature")
 		return
 	}
