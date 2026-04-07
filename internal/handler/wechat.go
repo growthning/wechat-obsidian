@@ -205,17 +205,17 @@ func (h *WeChatHandler) processMessage(msg *wechat.IncomingMessage, rawXML strin
 }
 
 // fetchArticle fetches a WeChat article and saves it as an article message.
-func (h *WeChatHandler) fetchArticle(url, title, rawXML string, now time.Time) {
+func (h *WeChatHandler) fetchArticle(url, title, msgID string, now time.Time) {
 	result, err := h.fetcher.FetchArticle(url)
 	if err != nil {
 		log.Printf("ERROR: fetching article %s: %v", url, err)
 		// Save as memo with error
 		m := &model.Message{
+			MsgID:     msgID,
 			Type:      "memo",
 			Content:   fmt.Sprintf("(article fetch failed: %v) [%s](%s)", err, title, url),
 			Title:     title,
 			SourceURL: url,
-			RawXML:    rawXML,
 			CreatedAt: now,
 		}
 		if _, err2 := h.store.InsertMessage(m); err2 != nil {
@@ -225,15 +225,15 @@ func (h *WeChatHandler) fetchArticle(url, title, rawXML string, now time.Time) {
 	}
 
 	m := &model.Message{
+		MsgID:     msgID,
 		Type:      "article",
 		Content:   result.Content,
 		Title:     result.Title,
 		Filename:  result.Filename,
 		SourceURL: url,
-		RawXML:    rawXML,
 		CreatedAt: now,
 	}
-	msgID, err := h.store.InsertMessage(m)
+	dbID, err := h.store.InsertMessage(m)
 	if err != nil {
 		log.Printf("ERROR: inserting article message: %v", err)
 		return
@@ -241,7 +241,7 @@ func (h *WeChatHandler) fetchArticle(url, title, rawXML string, now time.Time) {
 
 	for _, imgFilename := range result.Images {
 		att := &model.Attachment{
-			MessageID:   msgID,
+			MessageID:   dbID,
 			Filename:    imgFilename,
 			ContentType: "image/jpeg",
 			CreatedAt:   now,
@@ -296,6 +296,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 			return
 		}
 		m := &model.Message{
+			MsgID:     msg.MsgID,
 			Type:      "memo",
 			Content:   msg.Text.Content,
 			CreatedAt: now,
@@ -309,10 +310,11 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 			return
 		}
 		if strings.Contains(msg.Link.URL, "mp.weixin.qq.com") {
-			go h.fetchArticle(msg.Link.URL, msg.Link.Title, "", now)
+			go h.fetchArticle(msg.Link.URL, msg.Link.Title, msg.MsgID, now)
 		} else {
 			content := fmt.Sprintf("[%s](%s)", msg.Link.Title, msg.Link.URL)
 			m := &model.Message{
+				MsgID:     msg.MsgID,
 				Type:      "memo",
 				Content:   content,
 				Title:     msg.Link.Title,
@@ -334,8 +336,13 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		if msg.Channels == nil {
 			return
 		}
-		content := fmt.Sprintf("**视频号**: %s\n**标题**: %s", msg.Channels.Nickname, msg.Channels.Title)
+		subTypeStr := "视频"
+		if msg.Channels.SubType == 2 {
+			subTypeStr = "直播"
+		}
+		content := fmt.Sprintf("**视频号%s**: %s\n**标题**: %s", subTypeStr, msg.Channels.Nickname, msg.Channels.Title)
 		m := &model.Message{
+			MsgID:     msg.MsgID,
 			Type:      "memo",
 			Content:   content,
 			Title:     msg.Channels.Title,

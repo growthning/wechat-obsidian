@@ -4,6 +4,7 @@ import "time"
 
 type Message struct {
 	ID        int64     `json:"id"`
+	MsgID     string    `json:"-"`
 	Type      string    `json:"type"`
 	Content   string    `json:"content"`
 	Title     string    `json:"title,omitempty"`

@@ -24,13 +24,13 @@ export class ApiClient {
   }
 
   async fetchMessages(sinceId: number): Promise<SyncResponse> {
-    const url = `${this.baseUrl()}/api/messages?since_id=${sinceId}&apikey=${encodeURIComponent(this.apiKey)}`;
+    const url = `${this.baseUrl()}/api/sync?since=${sinceId}&apikey=${encodeURIComponent(this.apiKey)}`;
     const response = await requestUrl({ url, method: "GET" });
     return response.json as SyncResponse;
   }
 
   async ackMessages(lastId: number): Promise<void> {
-    const url = `${this.baseUrl()}/api/messages/ack?apikey=${encodeURIComponent(this.apiKey)}`;
+    const url = `${this.baseUrl()}/api/sync/ack?apikey=${encodeURIComponent(this.apiKey)}`;
     await requestUrl({
       url,
       method: "POST",

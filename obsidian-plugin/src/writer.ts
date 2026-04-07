@@ -54,23 +54,27 @@ export class VaultWriter {
   }
 
   private async createArticle(msg: SyncMessage): Promise<void> {
-    await this.ensureFolder(this.settings.articlesFolder);
+    let filePath: string;
 
-    let baseName = msg.filename || msg.title || "untitled";
-    // Remove .md extension if present
-    baseName = baseName.replace(/\.md$/, "");
+    if (msg.filename) {
+      // Server returns full path like "articles/2026-04-07-title.md"
+      filePath = normalizePath(msg.filename);
+    } else {
+      const baseName = msg.title || "untitled";
+      filePath = normalizePath(`${this.settings.articlesFolder}/${baseName}.md`);
+    }
 
-    let filePath = normalizePath(
-      `${this.settings.articlesFolder}/${baseName}.md`
-    );
+    // Ensure parent folder exists
+    const folder = filePath.substring(0, filePath.lastIndexOf("/"));
+    if (folder) {
+      await this.ensureFolder(folder);
+    }
 
     // Handle filename collision by appending timestamp
     const exists = await this.app.vault.adapter.exists(filePath);
     if (exists) {
       const timestamp = Date.now();
-      filePath = normalizePath(
-        `${this.settings.articlesFolder}/${baseName}-${timestamp}.md`
-      );
+      filePath = filePath.replace(".md", `-${timestamp}.md`);
     }
 
     let content = msg.content;

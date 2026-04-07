@@ -40,6 +40,7 @@ func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS messages (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			msg_id     TEXT    NOT NULL DEFAULT '',
 			type       TEXT    NOT NULL,
 			content    TEXT    NOT NULL DEFAULT '',
 			title      TEXT    NOT NULL DEFAULT '',
@@ -49,6 +50,7 @@ func (s *Store) migrate() error {
 			synced     INTEGER NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id) WHERE msg_id != '';
 
 		CREATE TABLE IF NOT EXISTS attachments (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,15 +68,20 @@ func (s *Store) migrate() error {
 
 func (s *Store) InsertMessage(msg *model.Message) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO messages (type, content, title, filename, source_url, raw_xml, synced, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.Type, msg.Content, msg.Title, msg.Filename, msg.SourceURL,
+		`INSERT OR IGNORE INTO messages (msg_id, type, content, title, filename, source_url, raw_xml, synced, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.MsgID, msg.Type, msg.Content, msg.Title, msg.Filename, msg.SourceURL,
 		msg.RawXML, boolToInt(msg.Synced), msg.CreatedAt,
 	)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, _ := res.LastInsertId()
+	if id == 0 {
+		// Duplicate msg_id, skip
+		return 0, nil
+	}
+	return id, nil
 }
 
 func (s *Store) InsertAttachment(att *model.Attachment) (int64, error) {
