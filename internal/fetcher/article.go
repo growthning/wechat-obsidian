@@ -163,7 +163,8 @@ type: wechat-article
 
 	// Generate filename
 	safeTitle := sanitizeFilename(truncateRunes(title, 20))
-	filename := fmt.Sprintf("articles/%s-%s.md", date, safeTitle)
+	timeStr := now.Format("1504")
+	filename := fmt.Sprintf("articles/%s-%s-%s.md", date, timeStr, safeTitle)
 
 	return &ArticleResult{
 		Title:    title,
