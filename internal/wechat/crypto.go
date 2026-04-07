@@ -101,7 +101,8 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 		return nil, errors.New("empty data")
 	}
 	padding := int(data[length-1])
-	if padding == 0 || padding > aes.BlockSize {
+	// WeChat uses PKCS#7 with 32-byte block size, not AES's 16-byte block size
+	if padding == 0 || padding > 32 {
 		return nil, fmt.Errorf("invalid padding size: %d", padding)
 	}
 	if padding > length {
