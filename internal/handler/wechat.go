@@ -71,32 +71,38 @@ func (h *WeChatHandler) HandleCallback(c *gin.Context) {
 
 	cb, err := wechat.ParseCallback(body)
 	if err != nil {
+		log.Printf("ERROR: failed to parse callback XML: %v, body: %s", err, string(body))
 		c.String(http.StatusBadRequest, "failed to parse callback")
 		return
 	}
 
 	// Try self-built app keys first, then KF keys
-	token := h.cfg.Token
 	aesKey := h.cfg.EncodingAESKey
-	if !wechat.VerifySignature(token, timestamp, nonce, cb.Encrypt, msgSign) {
+	if !wechat.VerifySignature(h.cfg.Token, timestamp, nonce, cb.Encrypt, msgSign) {
 		// Try KF keys
 		if h.cfg.KFToken != "" && wechat.VerifySignature(h.cfg.KFToken, timestamp, nonce, cb.Encrypt, msgSign) {
-			token = h.cfg.KFToken
 			aesKey = h.cfg.KFEncodingAESKey
+			log.Printf("INFO: callback matched KF keys")
 		} else {
+			log.Printf("ERROR: signature mismatch, msgSign=%s", msgSign)
 			c.String(http.StatusForbidden, "invalid signature")
 			return
 		}
+	} else {
+		log.Printf("INFO: callback matched app keys")
 	}
 
-	msgBytes, _, err := wechat.DecryptMessage(aesKey, cb.Encrypt)
+	msgBytes, corpID, err := wechat.DecryptMessage(aesKey, cb.Encrypt)
 	if err != nil {
+		log.Printf("ERROR: failed to decrypt: %v, aesKey=%s..., encrypt=%s...", err, aesKey[:8], cb.Encrypt[:20])
 		c.String(http.StatusBadRequest, "failed to decrypt message: "+err.Error())
 		return
 	}
+	log.Printf("INFO: decrypted message from corpID=%s, content=%s", corpID, string(msgBytes))
 
 	msg, err := wechat.ParseMessage(msgBytes)
 	if err != nil {
+		log.Printf("ERROR: failed to parse message XML: %v, content=%s", err, string(msgBytes))
 		c.String(http.StatusBadRequest, "failed to parse message")
 		return
 	}
