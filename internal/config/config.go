@@ -26,8 +26,9 @@ type WeChatConfig struct {
 	Secret         string `yaml:"secret"`
 	Token          string `yaml:"token"`
 	EncodingAESKey string `yaml:"encoding_aes_key"`
-	KFSecret         string `yaml:"kf_secret"`          // 微信客服应用的 secret
-	KFToken          string `yaml:"kf_token"`           // 微信客服回调 Token
+	KFCorpID         string `yaml:"kf_corp_id"`          // 微信客服平台的企业 ID
+	KFSecret         string `yaml:"kf_secret"`           // 微信客服平台的 Secret
+	KFToken          string `yaml:"kf_token"`            // 微信客服回调 Token
 	KFEncodingAESKey string `yaml:"kf_encoding_aes_key"` // 微信客服回调 EncodingAESKey
 }
 

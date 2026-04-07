@@ -40,11 +40,15 @@ func main() {
 	f := fetcher.New(imageDir, cfg.Article.Timeout, cfg.Article.MaxImages)
 
 	// init KF client
+	kfCorpID := cfg.WeChat.KFCorpID
+	if kfCorpID == "" {
+		kfCorpID = cfg.WeChat.CorpID
+	}
 	kfSecret := cfg.WeChat.KFSecret
 	if kfSecret == "" {
 		kfSecret = cfg.WeChat.Secret
 	}
-	kfClient := wechat.NewKFClient(cfg.WeChat.CorpID, kfSecret)
+	kfClient := wechat.NewKFClient(kfCorpID, kfSecret)
 
 	// init handlers
 	wechatHandler := handler.NewWeChatHandler(&cfg.WeChat, db, f, kfClient)
