@@ -1,6 +1,8 @@
 package fetcher
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,8 +92,9 @@ func (f *Fetcher) FetchArticle(url string) (*ArticleResult, error) {
 
 	// Download images (up to maxImages)
 	now := time.Now()
-	// Use timestamp to make filenames unique across articles
-	imgPrefix := now.Format("20060102-150405")
+	// Use URL hash to make filenames unique per article
+	urlHash := md5.Sum([]byte(url))
+	imgPrefix := now.Format("20060102") + "-" + hex.EncodeToString(urlHash[:4])
 	var downloadedImages []string
 	imgCount := 0
 

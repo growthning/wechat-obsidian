@@ -117,5 +117,18 @@ export class WeChatSyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("Reset Sync")
+      .setDesc("Reset sync position to re-fetch all messages from server")
+      .addButton((btn) =>
+        btn.setButtonText("Reset").onClick(async () => {
+          this.plugin.settings.lastSyncedId = 0;
+          await this.plugin.saveSettings();
+          this.plugin.restartPolling();
+          btn.setButtonText("Done!");
+          setTimeout(() => btn.setButtonText("Reset"), 2000);
+        })
+      );
   }
 }
