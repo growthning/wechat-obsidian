@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -283,6 +284,10 @@ func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix strin
 
 // processKFMessage processes a single message from the KF sync_msg API.
 func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix string) {
+	// Debug: log raw message JSON
+	if rawJSON, err := json.Marshal(msg); err == nil {
+		log.Printf("DEBUG: KF message: %s", string(rawJSON))
+	}
 	now := time.Now()
 
 	switch msg.MsgType {
