@@ -69,14 +69,23 @@ func (h *WeChatHandler) HandleCallback(c *gin.Context) {
 		return
 	}
 
-	if !wechat.VerifySignature(h.cfg.Token, timestamp, nonce, cb.Encrypt, msgSign) {
-		c.String(http.StatusForbidden, "invalid signature")
-		return
+	// Try self-built app keys first, then KF keys
+	token := h.cfg.Token
+	aesKey := h.cfg.EncodingAESKey
+	if !wechat.VerifySignature(token, timestamp, nonce, cb.Encrypt, msgSign) {
+		// Try KF keys
+		if h.cfg.KFToken != "" && wechat.VerifySignature(h.cfg.KFToken, timestamp, nonce, cb.Encrypt, msgSign) {
+			token = h.cfg.KFToken
+			aesKey = h.cfg.KFEncodingAESKey
+		} else {
+			c.String(http.StatusForbidden, "invalid signature")
+			return
+		}
 	}
 
-	msgBytes, _, err := wechat.DecryptMessage(h.cfg.EncodingAESKey, cb.Encrypt)
+	msgBytes, _, err := wechat.DecryptMessage(aesKey, cb.Encrypt)
 	if err != nil {
-		c.String(http.StatusBadRequest, "failed to decrypt message")
+		c.String(http.StatusBadRequest, "failed to decrypt message: "+err.Error())
 		return
 	}
 
