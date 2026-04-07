@@ -1,0 +1,17 @@
+server:
+  port: 8900
+  api_key: ""
+
+wechat:
+  corp_id: ""
+  agent_id: 0
+  secret: ""
+  token: ""
+  encoding_aes_key: ""
+
+storage:
+  data_dir: "./data"
+
+article:
+  timeout: 30s
+  max_images: 50
