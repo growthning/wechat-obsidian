@@ -206,7 +206,7 @@ func (h *WeChatHandler) processMessage(msg *wechat.IncomingMessage, rawXML strin
 
 // fetchArticle fetches a WeChat article and saves it as an article message.
 func (h *WeChatHandler) fetchArticle(url, title, msgID string, now time.Time) {
-	result, err := h.fetcher.FetchArticle(url)
+	result, err := h.fetcher.FetchArticle(url, now)
 	if err != nil {
 		log.Printf("ERROR: fetching article %s: %v", url, err)
 		// Save as memo with error
@@ -288,7 +288,8 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 	if rawJSON, err := json.Marshal(msg); err == nil {
 		log.Printf("DEBUG: KF message: %s", string(rawJSON))
 	}
-	now := time.Now()
+	// Use message send_time instead of current time
+	now := time.Unix(msg.SendTime, 0)
 
 	switch msg.MsgType {
 	case "text":

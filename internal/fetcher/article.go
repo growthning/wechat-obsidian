@@ -47,7 +47,7 @@ type ArticleResult struct {
 }
 
 // FetchArticle fetches a WeChat article URL and returns an ArticleResult.
-func (f *Fetcher) FetchArticle(url string) (*ArticleResult, error) {
+func (f *Fetcher) FetchArticle(url string, sendTime ...time.Time) (*ArticleResult, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -92,6 +92,9 @@ func (f *Fetcher) FetchArticle(url string) (*ArticleResult, error) {
 
 	// Download images (up to maxImages)
 	now := time.Now()
+	if len(sendTime) > 0 && !sendTime[0].IsZero() {
+		now = sendTime[0]
+	}
 	// Use URL hash to make filenames unique per article
 	urlHash := md5.Sum([]byte(url))
 	imgPrefix := now.Format("20060102") + "-" + hex.EncodeToString(urlHash[:4])
