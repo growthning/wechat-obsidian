@@ -120,23 +120,25 @@ type KFFileMsg struct {
 
 // syncMsgRequest is the request body for the sync_msg API.
 type syncMsgRequest struct {
-	Cursor string `json:"cursor"`
-	Token  string `json:"token"`
-	Limit  int    `json:"limit"`
+	Cursor   string `json:"cursor"`
+	Token    string `json:"token"`
+	Limit    int    `json:"limit"`
+	OpenKFID string `json:"open_kfid,omitempty"`
 }
 
 // SyncMessages fetches messages from the customer service sync_msg API.
 // callbackToken is the Token from the callback event XML, cursor is for pagination.
-func (k *KFClient) SyncMessages(callbackToken, cursor string) (*KFSyncResponse, error) {
+func (k *KFClient) SyncMessages(callbackToken, cursor, openKFID string) (*KFSyncResponse, error) {
 	token, err := k.GetAccessToken()
 	if err != nil {
 		return nil, fmt.Errorf("getting access token: %w", err)
 	}
 
 	reqBody := syncMsgRequest{
-		Cursor: cursor,
-		Token:  callbackToken,
-		Limit:  1000,
+		Cursor:   cursor,
+		Token:    callbackToken,
+		Limit:    1000,
+		OpenKFID: openKFID,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

@@ -31,6 +31,7 @@ type IncomingMessage struct {
 	FileName        string   `xml:"FileName"`    // file
 	Event           string   `xml:"Event"`       // event type (e.g. kf_msg_or_event)
 	Token           string   `xml:"Token"`       // KF callback token for sync_msg
+	OpenKFID        string   `xml:"OpenKfId"`    // KF account ID
 }
 
 // ParseCallback parses the encrypted callback envelope XML.

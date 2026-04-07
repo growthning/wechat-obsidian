@@ -120,7 +120,7 @@ func (h *WeChatHandler) processMessage(msg *wechat.IncomingMessage, rawXML strin
 	switch msg.MsgType {
 	case "event":
 		if msg.Event == "kf_msg_or_event" {
-			go h.processKFEvent(msg.Token, string(now.Format("20060102")))
+			go h.processKFEvent(msg.Token, msg.OpenKFID, string(now.Format("20060102")))
 		} else {
 			log.Printf("INFO: unhandled event type: %s", msg.Event)
 		}
@@ -252,7 +252,7 @@ func (h *WeChatHandler) fetchArticle(url, title, rawXML string, now time.Time) {
 }
 
 // processKFEvent handles a kf_msg_or_event callback by fetching actual messages via sync_msg API.
-func (h *WeChatHandler) processKFEvent(callbackToken, datePrefix string) {
+func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix string) {
 	if h.kf == nil {
 		log.Printf("ERROR: received KF event but KFClient is not configured")
 		return
@@ -260,7 +260,7 @@ func (h *WeChatHandler) processKFEvent(callbackToken, datePrefix string) {
 
 	cursor := ""
 	for {
-		resp, err := h.kf.SyncMessages(callbackToken, cursor)
+		resp, err := h.kf.SyncMessages(callbackToken, cursor, openKFID)
 		if err != nil {
 			log.Printf("ERROR: syncing KF messages: %v", err)
 			return
