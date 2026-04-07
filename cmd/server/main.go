@@ -4,8 +4,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/user/wechat-obsidian/internal/config"
+	"github.com/user/wechat-obsidian/internal/fetcher"
+	"github.com/user/wechat-obsidian/internal/handler"
+	"github.com/user/wechat-obsidian/internal/store"
 )
 
 func main() {
@@ -14,10 +23,51 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("failed to load config: %v", err)
+		os.Exit(1)
 	}
 
-	fmt.Printf("wechat-obsidian server starting on port %d\n", cfg.Server.Port)
-	fmt.Printf("  data dir: %s\n", cfg.Storage.DataDir)
-	fmt.Printf("  article timeout: %s, max images: %d\n", cfg.Article.Timeout, cfg.Article.MaxImages)
+	// init store
+	db, err := store.New(cfg.Storage.DataDir)
+	if err != nil {
+		log.Fatalf("failed to init store: %v", err)
+	}
+	defer db.Close()
+
+	// init fetcher
+	imageDir := filepath.Join(cfg.Storage.DataDir, "images")
+	f := fetcher.New(imageDir, cfg.Article.Timeout, cfg.Article.MaxImages)
+
+	// init handlers
+	wechatHandler := handler.NewWeChatHandler(&cfg.WeChat, db, f)
+	syncHandler := handler.NewSyncHandler(cfg.Server.APIKey, db)
+	imagesHandler := handler.NewImagesHandler(cfg.Server.APIKey, db)
+
+	// setup routes
+	r := gin.Default()
+
+	r.GET("/api/wechat/callback", wechatHandler.VerifyURL)
+	r.POST("/api/wechat/callback", wechatHandler.HandleCallback)
+	r.GET("/api/sync", syncHandler.GetMessages)
+	r.POST("/api/sync/ack", syncHandler.AckMessages)
+	r.GET("/api/images/:filename", imagesHandler.ServeImage)
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// graceful shutdown
+	go func() {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+		log.Println("shutting down...")
+		db.Close()
+		os.Exit(0)
+	}()
+
+	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	log.Printf("wechat-obsidian server starting on %s", addr)
+	if err := r.Run(addr); err != nil {
+		log.Fatalf("server failed: %v", err)
+	}
 }
