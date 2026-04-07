@@ -1,24 +1,29 @@
 package handler
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/user/wechat-obsidian/internal/fetcher"
 	"github.com/user/wechat-obsidian/internal/model"
 	"github.com/user/wechat-obsidian/internal/store"
 )
 
 // SyncHandler handles message sync API requests.
 type SyncHandler struct {
-	apiKey string
-	store  *store.Store
+	apiKey  string
+	store   *store.Store
+	fetcher *fetcher.Fetcher
 }
 
 // NewSyncHandler creates a new SyncHandler.
-func NewSyncHandler(apiKey string, s *store.Store) *SyncHandler {
-	return &SyncHandler{apiKey: apiKey, store: s}
+func NewSyncHandler(apiKey string, s *store.Store, f *fetcher.Fetcher) *SyncHandler {
+	return &SyncHandler{apiKey: apiKey, store: s, fetcher: f}
 }
 
 // GetMessages handles GET /api/sync — returns unsynced messages since a given ID.
@@ -73,4 +78,62 @@ func (h *SyncHandler) AckMessages(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// SaveURL handles POST /api/save — manually save a URL (article or plain link).
+func (h *SyncHandler) SaveURL(c *gin.Context) {
+	if c.Query("apikey") != h.apiKey {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+		return
+	}
+
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.URL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url is required"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "fetching"})
+
+	go func() {
+		now := time.Now()
+		result, err := h.fetcher.FetchArticle(req.URL)
+		if err != nil {
+			log.Printf("ERROR: SaveURL fetch failed: %v", err)
+			m := &model.Message{
+				Type:      "memo",
+				Content:   fmt.Sprintf("[%s](%s)", req.URL, req.URL),
+				SourceURL: req.URL,
+				CreatedAt: now,
+			}
+			h.store.InsertMessage(m)
+			return
+		}
+
+		m := &model.Message{
+			Type:      "article",
+			Content:   result.Content,
+			Title:     result.Title,
+			Filename:  result.Filename,
+			SourceURL: req.URL,
+			CreatedAt: now,
+		}
+		msgID, err := h.store.InsertMessage(m)
+		if err != nil {
+			log.Printf("ERROR: SaveURL insert failed: %v", err)
+			return
+		}
+		for _, img := range result.Images {
+			att := &model.Attachment{
+				MessageID:   msgID,
+				Filename:    img,
+				ContentType: "image/jpeg",
+				CreatedAt:   now,
+			}
+			h.store.InsertAttachment(att)
+		}
+		log.Printf("INFO: SaveURL saved article: %s (%d images)", result.Title, len(result.Images))
+	}()
 }

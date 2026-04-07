@@ -52,7 +52,7 @@ func main() {
 
 	// init handlers
 	wechatHandler := handler.NewWeChatHandler(&cfg.WeChat, db, f, kfClient)
-	syncHandler := handler.NewSyncHandler(cfg.Server.APIKey, db)
+	syncHandler := handler.NewSyncHandler(cfg.Server.APIKey, db, f)
 	imagesHandler := handler.NewImagesHandler(cfg.Server.APIKey, db)
 
 	// setup routes
@@ -63,6 +63,7 @@ func main() {
 	r.GET("/api/sync", syncHandler.GetMessages)
 	r.POST("/api/sync/ack", syncHandler.AckMessages)
 	r.GET("/api/images/:filename", imagesHandler.ServeImage)
+	r.POST("/api/save", syncHandler.SaveURL)
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
