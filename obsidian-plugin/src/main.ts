@@ -1,4 +1,4 @@
-import { Notice, Plugin } from "obsidian";
+import { Plugin } from "obsidian";
 import { ApiClient } from "./api";
 import {
   DEFAULT_SETTINGS,
