@@ -325,6 +325,21 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		}
 		h.processKFImage(msg.Image.MediaID, datePrefix, now)
 
+	case "channels":
+		if msg.Channels == nil {
+			return
+		}
+		content := fmt.Sprintf("**视频号**: %s\n**标题**: %s", msg.Channels.Nickname, msg.Channels.Title)
+		m := &model.Message{
+			Type:      "memo",
+			Content:   content,
+			Title:     msg.Channels.Title,
+			CreatedAt: now,
+		}
+		if _, err := h.store.InsertMessage(m); err != nil {
+			log.Printf("ERROR: inserting KF channels message: %v", err)
+		}
+
 	default:
 		log.Printf("INFO: unhandled KF message type: %s (msgid=%s)", msg.MsgType, msg.MsgID)
 	}

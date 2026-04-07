@@ -89,10 +89,11 @@ type KFMessage struct {
 	Origin         int    `json:"origin"` // 3=微信客户发送, 4=系统, 5=接待人员
 	MsgType        string `json:"msgtype"`
 
-	Text  *KFTextMsg  `json:"text,omitempty"`
-	Image *KFImageMsg `json:"image,omitempty"`
-	Link  *KFLinkMsg  `json:"link,omitempty"`
-	File  *KFFileMsg  `json:"file,omitempty"`
+	Text     *KFTextMsg     `json:"text,omitempty"`
+	Image    *KFImageMsg    `json:"image,omitempty"`
+	Link     *KFLinkMsg     `json:"link,omitempty"`
+	File     *KFFileMsg     `json:"file,omitempty"`
+	Channels *KFChannelsMsg `json:"channels,omitempty"`
 }
 
 // KFTextMsg is the text content of a KF message.
@@ -116,6 +117,13 @@ type KFLinkMsg struct {
 // KFFileMsg is the file content of a KF message.
 type KFFileMsg struct {
 	MediaID string `json:"media_id"`
+}
+
+// KFChannelsMsg is the channels (视频号) content of a KF message.
+type KFChannelsMsg struct {
+	SubType  int    `json:"sub_type"`  // 1=视频, 2=直播, etc.
+	Nickname string `json:"nickname"`  // 视频号名称
+	Title    string `json:"title"`     // 标题
 }
 
 // syncMsgRequest is the request body for the sync_msg API.
