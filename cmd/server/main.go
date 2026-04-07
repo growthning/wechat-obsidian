@@ -15,6 +15,7 @@ import (
 	"github.com/user/wechat-obsidian/internal/fetcher"
 	"github.com/user/wechat-obsidian/internal/handler"
 	"github.com/user/wechat-obsidian/internal/store"
+	"github.com/user/wechat-obsidian/internal/wechat"
 )
 
 func main() {
@@ -38,8 +39,15 @@ func main() {
 	imageDir := filepath.Join(cfg.Storage.DataDir, "images")
 	f := fetcher.New(imageDir, cfg.Article.Timeout, cfg.Article.MaxImages)
 
+	// init KF client
+	kfSecret := cfg.WeChat.KFSecret
+	if kfSecret == "" {
+		kfSecret = cfg.WeChat.Secret
+	}
+	kfClient := wechat.NewKFClient(cfg.WeChat.CorpID, kfSecret)
+
 	// init handlers
-	wechatHandler := handler.NewWeChatHandler(&cfg.WeChat, db, f)
+	wechatHandler := handler.NewWeChatHandler(&cfg.WeChat, db, f, kfClient)
 	syncHandler := handler.NewSyncHandler(cfg.Server.APIKey, db)
 	imagesHandler := handler.NewImagesHandler(cfg.Server.APIKey, db)
 

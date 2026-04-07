@@ -29,6 +29,8 @@ type IncomingMessage struct {
 	LinkDescription string   `xml:"Description"` // link
 	LinkURL         string   `xml:"Url"`         // link
 	FileName        string   `xml:"FileName"`    // file
+	Event           string   `xml:"Event"`       // event type (e.g. kf_msg_or_event)
+	Token           string   `xml:"Token"`       // KF callback token for sync_msg
 }
 
 // ParseCallback parses the encrypted callback envelope XML.

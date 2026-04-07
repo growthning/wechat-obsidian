@@ -21,11 +21,12 @@ type WeChatHandler struct {
 	cfg     *config.WeChatConfig
 	store   *store.Store
 	fetcher *fetcher.Fetcher
+	kf      *wechat.KFClient
 }
 
 // NewWeChatHandler creates a new WeChatHandler.
-func NewWeChatHandler(cfg *config.WeChatConfig, s *store.Store, f *fetcher.Fetcher) *WeChatHandler {
-	return &WeChatHandler{cfg: cfg, store: s, fetcher: f}
+func NewWeChatHandler(cfg *config.WeChatConfig, s *store.Store, f *fetcher.Fetcher, kf *wechat.KFClient) *WeChatHandler {
+	return &WeChatHandler{cfg: cfg, store: s, fetcher: f, kf: kf}
 }
 
 // VerifyURL handles GET requests for Enterprise WeChat URL verification.
@@ -96,6 +97,14 @@ func (h *WeChatHandler) processMessage(msg *wechat.IncomingMessage, rawXML strin
 	now := time.Now()
 
 	switch msg.MsgType {
+	case "event":
+		if msg.Event == "kf_msg_or_event" {
+			go h.processKFEvent(msg.Token, string(now.Format("20060102")))
+		} else {
+			log.Printf("INFO: unhandled event type: %s", msg.Event)
+		}
+		return
+
 	case "text":
 		m := &model.Message{
 			Type:      "memo",
@@ -218,5 +227,146 @@ func (h *WeChatHandler) fetchArticle(url, title, rawXML string, now time.Time) {
 		if _, err := h.store.InsertAttachment(att); err != nil {
 			log.Printf("ERROR: inserting article image attachment %s: %v", imgFilename, err)
 		}
+	}
+}
+
+// processKFEvent handles a kf_msg_or_event callback by fetching actual messages via sync_msg API.
+func (h *WeChatHandler) processKFEvent(callbackToken, datePrefix string) {
+	if h.kf == nil {
+		log.Printf("ERROR: received KF event but KFClient is not configured")
+		return
+	}
+
+	cursor := ""
+	for {
+		resp, err := h.kf.SyncMessages(callbackToken, cursor)
+		if err != nil {
+			log.Printf("ERROR: syncing KF messages: %v", err)
+			return
+		}
+
+		for _, msg := range resp.MsgList {
+			// Only process messages from WeChat customers (origin=3)
+			if msg.Origin != 3 {
+				continue
+			}
+			h.processKFMessage(&msg, datePrefix)
+		}
+
+		if resp.HasMore != 1 || resp.NextCursor == "" {
+			break
+		}
+		cursor = resp.NextCursor
+	}
+}
+
+// processKFMessage processes a single message from the KF sync_msg API.
+func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix string) {
+	now := time.Now()
+
+	switch msg.MsgType {
+	case "text":
+		if msg.Text == nil {
+			return
+		}
+		m := &model.Message{
+			Type:      "memo",
+			Content:   msg.Text.Content,
+			CreatedAt: now,
+		}
+		if _, err := h.store.InsertMessage(m); err != nil {
+			log.Printf("ERROR: inserting KF text message: %v", err)
+		}
+
+	case "link":
+		if msg.Link == nil {
+			return
+		}
+		if strings.Contains(msg.Link.URL, "mp.weixin.qq.com") {
+			go h.fetchArticle(msg.Link.URL, msg.Link.Title, "", now)
+		} else {
+			content := fmt.Sprintf("[%s](%s)", msg.Link.Title, msg.Link.URL)
+			m := &model.Message{
+				Type:      "memo",
+				Content:   content,
+				Title:     msg.Link.Title,
+				SourceURL: msg.Link.URL,
+				CreatedAt: now,
+			}
+			if _, err := h.store.InsertMessage(m); err != nil {
+				log.Printf("ERROR: inserting KF link memo: %v", err)
+			}
+		}
+
+	case "image":
+		if msg.Image == nil {
+			return
+		}
+		h.processKFImage(msg.Image.MediaID, datePrefix, now)
+
+	default:
+		log.Printf("INFO: unhandled KF message type: %s (msgid=%s)", msg.MsgType, msg.MsgID)
+	}
+}
+
+// processKFImage downloads a media file via KF API and saves it as an image message.
+func (h *WeChatHandler) processKFImage(mediaID, datePrefix string, now time.Time) {
+	data, contentType, err := h.kf.DownloadMedia(mediaID)
+	if err != nil {
+		log.Printf("ERROR: downloading KF media %s: %v", mediaID, err)
+		m := &model.Message{
+			Type:      "memo",
+			Content:   fmt.Sprintf("(KF image download failed: %v) media_id=%s", err, mediaID),
+			CreatedAt: now,
+		}
+		if _, err2 := h.store.InsertMessage(m); err2 != nil {
+			log.Printf("ERROR: inserting KF image fallback memo: %v", err2)
+		}
+		return
+	}
+
+	ext := mediaExtFromContentType(contentType)
+	filename := fmt.Sprintf("img-%s-%s%s", datePrefix, mediaID[:8], ext)
+
+	if err := h.fetcher.SaveFile(filename, data); err != nil {
+		log.Printf("ERROR: saving KF image %s: %v", filename, err)
+		return
+	}
+
+	m := &model.Message{
+		Type:      "image",
+		Content:   fmt.Sprintf("![[%s]]", filename),
+		Filename:  filename,
+		CreatedAt: now,
+	}
+	msgID, err := h.store.InsertMessage(m)
+	if err != nil {
+		log.Printf("ERROR: inserting KF image message: %v", err)
+		return
+	}
+
+	att := &model.Attachment{
+		MessageID:   msgID,
+		Filename:    filename,
+		ContentType: contentType,
+		Size:        int64(len(data)),
+		CreatedAt:   now,
+	}
+	if _, err := h.store.InsertAttachment(att); err != nil {
+		log.Printf("ERROR: inserting KF image attachment: %v", err)
+	}
+}
+
+// mediaExtFromContentType returns a file extension based on content-type.
+func mediaExtFromContentType(ct string) string {
+	switch {
+	case strings.Contains(ct, "png"):
+		return ".png"
+	case strings.Contains(ct, "gif"):
+		return ".gif"
+	case strings.Contains(ct, "webp"):
+		return ".webp"
+	default:
+		return ".jpg"
 	}
 }

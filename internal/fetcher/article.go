@@ -206,6 +206,15 @@ func (f *Fetcher) DownloadToFile(url, filename string) error {
 	return nil
 }
 
+// SaveFile saves raw bytes to imageDir/filename.
+func (f *Fetcher) SaveFile(filename string, data []byte) error {
+	if err := os.MkdirAll(f.imageDir, 0o755); err != nil {
+		return fmt.Errorf("creating image dir: %w", err)
+	}
+	destPath := filepath.Join(f.imageDir, filename)
+	return os.WriteFile(destPath, data, 0o644)
+}
+
 // fixImageLinks replaces standard markdown image links with Obsidian wiki-link format.
 // It matches patterns like ![...](img-YYYYMMDD-NNN.ext) and replaces them with ![[filename]].
 func fixImageLinks(markdown string, downloadedImages []string, datePrefix string) string {

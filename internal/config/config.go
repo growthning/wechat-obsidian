@@ -26,6 +26,7 @@ type WeChatConfig struct {
 	Secret         string `yaml:"secret"`
 	Token          string `yaml:"token"`
 	EncodingAESKey string `yaml:"encoding_aes_key"`
+	KFSecret       string `yaml:"kf_secret"` // 微信客服应用的 secret (may differ from self-built app secret)
 }
 
 type StorageConfig struct {

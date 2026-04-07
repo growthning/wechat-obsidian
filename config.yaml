@@ -8,6 +8,7 @@ wechat:
   secret: ""
   token: ""
   encoding_aes_key: ""
+  kf_secret: "" # 微信客服应用 secret (留空则使用 secret)
 
 storage:
   data_dir: "./data"
