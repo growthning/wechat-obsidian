@@ -35,9 +35,10 @@ export class VaultWriter {
     const dateStr = this.formatDate(date);
     const timeStr = this.formatTime(date);
     const fileName = suffix ? `${dateStr}-${suffix}` : dateStr;
-    const filePath = normalizePath(`${this.settings.dailyFolder}/${fileName}.md`);
+    const dayFolder = normalizePath(`${this.settings.dailyFolder}/${dateStr}`);
+    const filePath = normalizePath(`${dayFolder}/${fileName}.md`);
 
-    await this.ensureFolder(this.settings.dailyFolder);
+    await this.ensureFolder(dayFolder);
 
     let line: string;
     if (suffix) {
@@ -58,10 +59,10 @@ export class VaultWriter {
       await this.app.vault.adapter.write(filePath, header + line);
     }
 
-    // Download images to attachments folder
+    // Download images to the day's folder
     if (msg.images && msg.images.length > 0) {
       for (const filename of msg.images) {
-        await this.downloadAndSaveImage(filename, this.settings.attachmentsFolder);
+        await this.downloadAndSaveImage(filename, dayFolder);
       }
     }
   }

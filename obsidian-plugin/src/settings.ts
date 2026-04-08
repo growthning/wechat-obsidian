@@ -15,9 +15,9 @@ export const DEFAULT_SETTINGS: WeChatSyncSettings = {
   serverUrl: "",
   apiKey: "",
   pollInterval: 10,
-  dailyFolder: "daily",
-  articlesFolder: "articles",
-  attachmentsFolder: "attachments",
+  dailyFolder: "raw/daily",
+  articlesFolder: "raw/articles",
+  attachmentsFolder: "raw/attachments",
   lastSyncedId: 0,
 };
 
