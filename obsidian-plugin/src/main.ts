@@ -93,16 +93,24 @@ export default class WeChatSyncPlugin extends Plugin {
           break;
         }
 
-        for (const msg of response.messages) {
-          await writer.writeMessage(msg);
+        // Sort by send time before writing (id order may differ from send time due to async fetching)
+        const sorted = [...response.messages].sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+        for (const msg of sorted) {
+          try {
+            await writer.writeMessage(msg);
+          } catch (e) {
+            console.error(`WeChat Sync: failed to write message ${msg.id}`, e);
+          }
         }
 
-        // Update lastSyncedId to the highest id received
-        const lastMsg = response.messages[response.messages.length - 1];
-        if (lastMsg) {
-          this.settings.lastSyncedId = lastMsg.id;
+        // ACK with max id in batch (not last sorted, which may differ from highest id)
+        const maxId = Math.max(...response.messages.map((m) => m.id));
+        if (maxId > 0) {
+          this.settings.lastSyncedId = maxId;
           await this.saveSettings();
-          await api.ackMessages(lastMsg.id);
+          await api.ackMessages(maxId);
         }
 
         hasMore = response.has_more;

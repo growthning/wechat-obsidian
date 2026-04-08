@@ -14,6 +14,9 @@ export class VaultWriter {
       case "article":
         await this.createArticle(msg);
         break;
+      case "channels":
+        await this.appendToDaily(msg, "视频号");
+        break;
       case "memo":
       case "image":
       case "chat_record":
@@ -24,89 +27,89 @@ export class VaultWriter {
     }
   }
 
-  private async appendToDaily(msg: SyncMessage): Promise<void> {
+  private async appendToDaily(msg: SyncMessage, suffix?: string): Promise<void> {
     const date = new Date(msg.created_at);
     const dateStr = this.formatDate(date);
     const timeStr = this.formatTime(date);
-    const filePath = normalizePath(`${this.settings.dailyFolder}/${dateStr}.md`);
+    const fileName = suffix ? `${dateStr}-${suffix}` : dateStr;
+    const filePath = normalizePath(`${this.settings.dailyFolder}/${fileName}.md`);
 
     await this.ensureFolder(this.settings.dailyFolder);
 
-    let content = "";
-    const line = `- ${timeStr} ${msg.content}\n`;
+    let line: string;
+    if (suffix) {
+      // Channels: block format with separator
+      line = `${msg.content}\n_${timeStr}_\n\n---\n\n`;
+    } else {
+      // Memo: list format
+      line = `- ${timeStr} ${msg.content}\n`;
+    }
 
     const exists = await this.app.vault.adapter.exists(filePath);
     if (exists) {
-      content = await this.app.vault.adapter.read(filePath);
+      let content = await this.app.vault.adapter.read(filePath);
       content += line;
       await this.app.vault.adapter.write(filePath, content);
     } else {
-      content = `# ${dateStr}\n\n${line}`;
-      await this.app.vault.adapter.write(filePath, content);
+      const header = `# ${fileName}\n\n`;
+      await this.app.vault.adapter.write(filePath, header + line);
     }
 
-    // Download images if present
+    // Download images to attachments folder
     if (msg.images && msg.images.length > 0) {
       for (const filename of msg.images) {
-        await this.downloadAndSaveImage(filename);
+        await this.downloadAndSaveImage(filename, this.settings.attachmentsFolder);
       }
     }
   }
 
   private async createArticle(msg: SyncMessage): Promise<void> {
-    let filePath: string;
-
+    // Derive a subfolder name from the filename (e.g. "articles/2026-04-07-1532-标题")
+    let baseName: string;
     if (msg.filename) {
-      // Server returns full path like "articles/2026-04-07-title.md"
-      filePath = normalizePath(msg.filename);
+      // "articles/2026-04-07-1532-标题.md" → "2026-04-07-1532-标题"
+      baseName = msg.filename.replace(/^articles\//, "").replace(/\.md$/, "");
     } else {
-      const baseName = msg.title || "untitled";
-      filePath = normalizePath(`${this.settings.articlesFolder}/${baseName}.md`);
+      baseName = msg.title || "untitled";
     }
 
-    // Ensure parent folder exists
-    const folder = filePath.substring(0, filePath.lastIndexOf("/"));
-    if (folder) {
-      await this.ensureFolder(folder);
-    }
+    const articleFolder = normalizePath(`${this.settings.articlesFolder}/${baseName}`);
+    await this.ensureFolder(articleFolder);
 
-    // Handle filename collision by appending timestamp
+    const filePath = normalizePath(`${articleFolder}/${baseName}.md`);
+
+    // Handle filename collision
     const exists = await this.app.vault.adapter.exists(filePath);
+    let finalPath = filePath;
     if (exists) {
-      const timestamp = Date.now();
-      filePath = filePath.replace(".md", `-${timestamp}.md`);
+      finalPath = filePath.replace(".md", `-${Date.now()}.md`);
     }
 
     let content = msg.content;
 
-    // Add title as heading if present and not already in content
     if (msg.title && !content.startsWith("# ")) {
       content = `# ${msg.title}\n\n${content}`;
     }
 
-    // Add source URL if present
     if (msg.source_url) {
       content += `\n\n---\nSource: ${msg.source_url}\n`;
     }
 
-    await this.app.vault.adapter.write(filePath, content);
+    await this.app.vault.adapter.write(finalPath, content);
 
-    // Download images if present
+    // Download article images into the same subfolder
     if (msg.images && msg.images.length > 0) {
       for (const filename of msg.images) {
-        await this.downloadAndSaveImage(filename);
+        await this.downloadAndSaveImage(filename, articleFolder);
       }
     }
   }
 
-  private async downloadAndSaveImage(filename: string): Promise<void> {
-    const filePath = normalizePath(
-      `${this.settings.attachmentsFolder}/${filename}`
-    );
+  private async downloadAndSaveImage(filename: string, targetFolder: string): Promise<void> {
+    const filePath = normalizePath(`${targetFolder}/${filename}`);
 
-    await this.ensureFolder(this.settings.attachmentsFolder);
+    await this.ensureFolder(targetFolder);
 
-    // Skip if file already exists
     const exists = await this.app.vault.adapter.exists(filePath);
     if (exists) {
       return;

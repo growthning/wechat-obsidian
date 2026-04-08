@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -182,21 +183,11 @@ func (h *WeChatHandler) processMessage(msg *wechat.IncomingMessage, rawXML strin
 		}
 
 	case "link":
+		cleanedURL := cleanURL(msg.LinkURL)
 		if strings.Contains(msg.LinkURL, "mp.weixin.qq.com") {
 			go h.fetchArticle(msg.LinkURL, msg.LinkTitle, rawXML, now)
 		} else {
-			content := fmt.Sprintf("[%s](%s)", msg.LinkTitle, msg.LinkURL)
-			m := &model.Message{
-				Type:      "memo",
-				Content:   content,
-				Title:     msg.LinkTitle,
-				SourceURL: msg.LinkURL,
-				RawXML:    rawXML,
-				CreatedAt: now,
-			}
-			if _, err := h.store.InsertMessage(m); err != nil {
-				log.Printf("ERROR: inserting link memo: %v", err)
-			}
+			go h.fetchGenericOrMemo(cleanedURL, msg.LinkTitle, "", now)
 		}
 
 	default:
@@ -250,6 +241,54 @@ func (h *WeChatHandler) fetchArticle(url, title, msgID string, now time.Time) {
 			log.Printf("ERROR: inserting article image attachment %s: %v", imgFilename, err)
 		}
 	}
+}
+
+// fetchGenericOrMemo tries to fetch a non-WeChat URL as an article; falls back to memo.
+func (h *WeChatHandler) fetchGenericOrMemo(url, title, msgID string, now time.Time) {
+	result, err := h.fetcher.FetchGenericArticle(url, now)
+	if err != nil {
+		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
+		content := fmt.Sprintf("[%s](%s)", title, url)
+		m := &model.Message{
+			MsgID:     msgID,
+			Type:      "memo",
+			Content:   content,
+			Title:     title,
+			SourceURL: url,
+			CreatedAt: now,
+		}
+		if _, err2 := h.store.InsertMessage(m); err2 != nil {
+			log.Printf("ERROR: inserting link memo: %v", err2)
+		}
+		return
+	}
+
+	m := &model.Message{
+		MsgID:     msgID,
+		Type:      "article",
+		Content:   result.Content,
+		Title:     result.Title,
+		Filename:  result.Filename,
+		SourceURL: url,
+		CreatedAt: now,
+	}
+	dbID, err := h.store.InsertMessage(m)
+	if err != nil {
+		log.Printf("ERROR: inserting generic article: %v", err)
+		return
+	}
+	for _, img := range result.Images {
+		att := &model.Attachment{
+			MessageID:   dbID,
+			Filename:    img,
+			ContentType: "image/jpeg",
+			CreatedAt:   now,
+		}
+		if _, err := h.store.InsertAttachment(att); err != nil {
+			log.Printf("ERROR: inserting generic article image %s: %v", img, err)
+		}
+	}
+	log.Printf("INFO: saved generic article: %s (%d images)", result.Title, len(result.Images))
 }
 
 // processKFEvent handles a kf_msg_or_event callback by fetching actual messages via sync_msg API.
@@ -310,21 +349,11 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		if msg.Link == nil {
 			return
 		}
+		cleanedURL := cleanURL(msg.Link.URL)
 		if strings.Contains(msg.Link.URL, "mp.weixin.qq.com") {
 			go h.fetchArticle(msg.Link.URL, msg.Link.Title, msg.MsgID, now)
 		} else {
-			content := fmt.Sprintf("[%s](%s)", msg.Link.Title, msg.Link.URL)
-			m := &model.Message{
-				MsgID:     msg.MsgID,
-				Type:      "memo",
-				Content:   content,
-				Title:     msg.Link.Title,
-				SourceURL: msg.Link.URL,
-				CreatedAt: now,
-			}
-			if _, err := h.store.InsertMessage(m); err != nil {
-				log.Printf("ERROR: inserting KF link memo: %v", err)
-			}
+			go h.fetchGenericOrMemo(cleanedURL, msg.Link.Title, msg.MsgID, now)
 		}
 
 	case "image":
@@ -337,14 +366,15 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		if msg.Channels == nil {
 			return
 		}
-		subTypeStr := "视频"
+		subTypeStr := "视频号"
 		if msg.Channels.SubType == 2 {
-			subTypeStr = "直播"
+			subTypeStr = "视频号直播"
 		}
-		content := fmt.Sprintf("**视频号%s**: %s\n**标题**: %s", subTypeStr, msg.Channels.Nickname, msg.Channels.Title)
+		title := truncateStr(msg.Channels.Title, 80)
+		content := fmt.Sprintf("**%s** · %s\n%s", msg.Channels.Nickname, subTypeStr, title)
 		m := &model.Message{
 			MsgID:     msg.MsgID,
-			Type:      "memo",
+			Type:      "channels",
 			Content:   content,
 			Title:     msg.Channels.Title,
 			CreatedAt: now,
@@ -404,6 +434,42 @@ func (h *WeChatHandler) processKFImage(mediaID, datePrefix string, now time.Time
 	if _, err := h.store.InsertAttachment(att); err != nil {
 		log.Printf("ERROR: inserting KF image attachment: %v", err)
 	}
+}
+
+// truncateStr truncates a string to at most maxRunes Unicode code points, adding "…" if truncated.
+func truncateStr(s string, maxRunes int) string {
+	// Replace newlines with spaces for single-line display
+	s = strings.ReplaceAll(s, "\n", " ")
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "…"
+}
+
+// cleanURL strips tracking parameters from a URL.
+func cleanURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	// Common tracking params to remove
+	for key := range q {
+		k := strings.ToLower(key)
+		if strings.HasPrefix(k, "utm_") ||
+			strings.HasPrefix(k, "share_") ||
+			strings.HasPrefix(k, "sharer_") ||
+			k == "tt_from" || k == "upstream_biz" || k == "wxshare_count" ||
+			k == "req_id_new" || k == "module_name" || k == "category_new" ||
+			k == "app" || k == "timestamp" || k == "mpshare" || k == "scene" ||
+			k == "srcid" {
+			q.Del(key)
+		}
+	}
+	u.RawQuery = q.Encode()
+	u.Fragment = ""
+	return u.String()
 }
 
 // mediaExtFromContentType returns a file extension based on content-type.

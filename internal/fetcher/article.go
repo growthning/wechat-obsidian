@@ -1,11 +1,14 @@
 package fetcher
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,8 +16,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/net/html"
+
 	"github.com/PuerkitoBio/goquery"
 	md "github.com/JohannesKaufmann/html-to-markdown"
+	"github.com/markusmobius/go-trafilatura"
 )
 
 // Fetcher fetches WeChat articles and converts them to Markdown.
@@ -176,6 +182,381 @@ type: wechat-article
 		Filename: filename,
 		Images:   downloadedImages,
 	}, nil
+}
+
+// FetchGenericArticle fetches a non-WeChat URL. Tries trafilatura first, then Jina Reader.
+func (f *Fetcher) FetchGenericArticle(articleURL string, sendTime ...time.Time) (*ArticleResult, error) {
+	now := time.Now()
+	if len(sendTime) > 0 && !sendTime[0].IsZero() {
+		now = sendTime[0]
+	}
+
+	// 1. Try trafilatura (local, fast)
+	result, err := f.fetchWithTrafilatura(articleURL, now)
+	if err == nil {
+		return result, nil
+	}
+	log.Printf("INFO: trafilatura failed for %s: %v, trying Jina", articleURL, err)
+
+	// 2. Fallback to Jina Reader (handles JS-rendered pages)
+	result, err = f.fetchWithJina(articleURL, now)
+	if err == nil {
+		return result, nil
+	}
+	return nil, fmt.Errorf("all extractors failed: %w", err)
+}
+
+// fetchWithTrafilatura extracts article content locally using go-trafilatura.
+func (f *Fetcher) fetchWithTrafilatura(articleURL string, now time.Time) (*ArticleResult, error) {
+	opts := trafilatura.Options{
+		OriginalURL:   &url.URL{},
+		IncludeImages: true,
+		IncludeLinks:  true,
+	}
+	if u, err := url.Parse(articleURL); err == nil {
+		opts.OriginalURL = u
+	}
+
+	req, err := http.NewRequest("GET", articleURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching page: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	result, err := trafilatura.Extract(resp.Body, opts)
+	if err != nil {
+		return nil, fmt.Errorf("trafilatura extract: %w", err)
+	}
+
+	if result.ContentText == "" || len(result.ContentText) < 200 {
+		return nil, fmt.Errorf("content too short (%d chars)", len(result.ContentText))
+	}
+
+	// Render the clean content node to HTML, then convert to markdown
+	var contentHTML string
+	if result.ContentNode != nil {
+		var buf bytes.Buffer
+		if err := html.Render(&buf, result.ContentNode); err == nil {
+			contentHTML = buf.String()
+		}
+	}
+
+	var markdown string
+	if contentHTML != "" {
+		converter := md.NewConverter("", true, nil)
+		markdown, err = converter.ConvertString(contentHTML)
+		if err != nil {
+			markdown = result.ContentText // fallback to plain text
+		}
+	} else {
+		markdown = result.ContentText
+	}
+
+	title := result.Metadata.Title
+	if title == "" {
+		title = "untitled"
+	}
+	source := result.Metadata.Sitename
+	if source == "" {
+		source = extractDomain(articleURL)
+	}
+
+	return f.buildArticleResult(articleURL, title, source, markdown, now)
+}
+
+// fetchWithJina uses Jina Reader to render JS pages and return markdown.
+func (f *Fetcher) fetchWithJina(articleURL string, now time.Time) (*ArticleResult, error) {
+	jinaURL := "https://r.jina.ai/" + articleURL
+	req, err := http.NewRequest("GET", jinaURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating jina request: %w", err)
+	}
+	req.Header.Set("Accept", "text/markdown")
+	req.Header.Set("X-No-Cache", "true")
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("jina fetch: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("jina status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading jina response: %w", err)
+	}
+
+	raw := string(body)
+
+	jinaTitle, jinaBody := parseJinaResponse(raw)
+	if len(strings.TrimSpace(jinaBody)) < 200 {
+		return nil, fmt.Errorf("jina content too short")
+	}
+
+	// Extract article body using content density (no rules needed)
+	markdown := extractByDensity(jinaBody)
+	if len(strings.TrimSpace(markdown)) < 200 {
+		return nil, fmt.Errorf("density extraction too short")
+	}
+
+	if jinaTitle == "" {
+		jinaTitle = "untitled"
+	}
+	return f.buildArticleResult(articleURL, jinaTitle, extractDomain(articleURL), markdown, now)
+}
+
+// parseJinaResponse extracts title and body from Jina Reader's markdown response.
+func parseJinaResponse(raw string) (string, string) {
+	title := ""
+	bodyStart := 0
+	lines := strings.Split(raw, "\n")
+
+	for i, line := range lines {
+		if strings.HasPrefix(line, "Title: ") {
+			title = strings.TrimPrefix(line, "Title: ")
+		}
+		if strings.HasPrefix(line, "Markdown Content:") {
+			bodyStart = i + 1
+			break
+		}
+	}
+
+	if bodyStart > 0 && bodyStart < len(lines) {
+		return title, strings.TrimSpace(strings.Join(lines[bodyStart:], "\n"))
+	}
+
+	// No Jina header found, use raw content
+	// Try to extract title from first heading
+	for _, line := range lines {
+		if strings.HasPrefix(line, "# ") {
+			if title == "" {
+				title = strings.TrimPrefix(line, "# ")
+			}
+			break
+		}
+	}
+	return title, raw
+}
+
+
+// buildArticleResult creates an ArticleResult with frontmatter, image downloads, etc.
+func (f *Fetcher) buildArticleResult(articleURL, title, source, markdown string, now time.Time) (*ArticleResult, error) {
+	// Download images referenced in the markdown
+	urlHash := md5.Sum([]byte(articleURL))
+	imgPrefix := now.Format("20060102") + "-" + hex.EncodeToString(urlHash[:4])
+	var downloadedImages []string
+
+	imgRe := regexp.MustCompile(`!\[[^\]]*\]\(([^)]+)\)`)
+	imgCount := 0
+	markdown = imgRe.ReplaceAllStringFunc(markdown, func(match string) string {
+		if imgCount >= f.maxImages {
+			return match
+		}
+		sub := imgRe.FindStringSubmatch(match)
+		if len(sub) < 2 || !strings.HasPrefix(sub[1], "http") {
+			return match
+		}
+		imgCount++
+		ext := imageExt(sub[1])
+		filename := fmt.Sprintf("img-%s-%03d%s", imgPrefix, imgCount, ext)
+		if err := f.DownloadToFile(sub[1], filename); err == nil {
+			downloadedImages = append(downloadedImages, filename)
+			return fmt.Sprintf("![[%s]]", filename)
+		}
+		return match
+	})
+
+	date := now.Format("2006-01-02")
+	syncedAt := now.Format(time.RFC3339)
+	frontmatter := fmt.Sprintf(`---
+title: "%s"
+source: "%s"
+url: "%s"
+date: %s
+synced: %s
+type: web-article
+---
+
+`,
+		escapeYAML(title),
+		escapeYAML(source),
+		escapeYAML(articleURL),
+		date,
+		syncedAt,
+	)
+
+	content := frontmatter + markdown
+
+	safeTitle := sanitizeFilename(truncateRunes(title, 20))
+	timeStr := now.Format("1504")
+	filename := fmt.Sprintf("articles/%s-%s-%s.md", date, timeStr, safeTitle)
+
+	return &ArticleResult{
+		Title:    title,
+		Source:   source,
+		Content:  content,
+		Filename: filename,
+		Images:   downloadedImages,
+	}, nil
+}
+
+
+// extractByDensity extracts the main content from markdown using content density.
+// Long paragraphs = content, short lines = navigation/noise.
+// Finds the largest continuous region of high-density blocks.
+func extractByDensity(markdown string) string {
+	// Split into blocks by blank lines
+	blocks := splitBlocks(markdown)
+	if len(blocks) == 0 {
+		return markdown
+	}
+
+	// Score each block: text length (stripped of markdown syntax) as density
+	scores := make([]int, len(blocks))
+	for i, block := range blocks {
+		text := stripMarkdownSyntax(block)
+		scores[i] = len([]rune(text))
+	}
+
+	// Find the longest contiguous region with high average density
+	// Use Kadane's algorithm variant: blocks with score >= threshold contribute positively
+	threshold := 30 // chars — lines shorter than this are likely noise
+	bestStart, bestEnd, bestSum := 0, 0, 0
+	curStart, curSum := 0, 0
+
+	for i, score := range scores {
+		// Positive contribution if above threshold, negative if below
+		val := score - threshold
+		curSum += val
+		if curSum > bestSum {
+			bestSum = curSum
+			bestStart = curStart
+			bestEnd = i + 1
+		}
+		if curSum < 0 {
+			curSum = 0
+			curStart = i + 1
+		}
+	}
+
+	if bestEnd <= bestStart {
+		return markdown
+	}
+
+	result := strings.Join(blocks[bestStart:bestEnd], "\n\n")
+
+	// Trim trailing comment/interaction lines from the end
+	result = trimTrailingComments(result)
+
+	return strings.TrimSpace(result)
+}
+
+// splitBlocks splits markdown into blocks separated by blank lines.
+func splitBlocks(markdown string) []string {
+	var blocks []string
+	var current []string
+	for _, line := range strings.Split(markdown, "\n") {
+		if strings.TrimSpace(line) == "" {
+			if len(current) > 0 {
+				blocks = append(blocks, strings.Join(current, "\n"))
+				current = nil
+			}
+		} else {
+			current = append(current, line)
+		}
+	}
+	if len(current) > 0 {
+		blocks = append(blocks, strings.Join(current, "\n"))
+	}
+	return blocks
+}
+
+// stripMarkdownSyntax removes markdown syntax to get approximate text length.
+func stripMarkdownSyntax(s string) string {
+	// Remove image/link syntax, headings markers, bold/italic markers, list markers
+	s = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`).ReplaceAllString(s, "img")
+	s = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)`).ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "*", "")
+	s = strings.ReplaceAll(s, "#", "")
+	s = strings.ReplaceAll(s, "> ", "")
+	return strings.TrimSpace(s)
+}
+
+// trimTrailingComments removes comment/interaction lines from the end of extracted content.
+func trimTrailingComments(content string) string {
+	lines := strings.Split(content, "\n")
+	end := len(lines)
+	for end > 0 {
+		trimmed := strings.TrimSpace(lines[end-1])
+		if isCommentLine(trimmed) || trimmed == "" {
+			end--
+		} else {
+			break
+		}
+	}
+	if end <= 0 {
+		return content
+	}
+	return strings.Join(lines[:end], "\n")
+}
+
+// isCommentLine returns true if a line looks like comment/interaction noise.
+func isCommentLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	// User avatars and profiles
+	if strings.Contains(line, "user-avatar") || strings.Contains(line, "/c/user/") {
+		return true
+	}
+	// Reply timestamps, like counts
+	if strings.Contains(line, "回复·") || strings.Contains(line, "赞    ") {
+		return true
+	}
+	// Interaction buttons
+	markers := []string{"举报", "评论", "收藏", "转发", "分享", "点赞"}
+	for _, m := range markers {
+		if matched, _ := regexp.MatchString(`^`+m+`\s*\d*$`, line); matched {
+			return true
+		}
+	}
+	// Bare list markers
+	if line == "*" {
+		return true
+	}
+	// "点击展开剩余 N%", "欢迎下载APP"
+	if strings.HasPrefix(line, "点击展开") || strings.Contains(line, "下载APP") {
+		return true
+	}
+	return false
+}
+
+// extractDomain returns a clean domain name from a URL.
+func extractDomain(rawURL string) string {
+	if idx := strings.Index(rawURL, "://"); idx >= 0 {
+		host := rawURL[idx+3:]
+		if slashIdx := strings.Index(host, "/"); slashIdx >= 0 {
+			host = host[:slashIdx]
+		}
+		host = strings.TrimPrefix(host, "www.")
+		host = strings.TrimPrefix(host, "m.")
+		return host
+	}
+	return ""
 }
 
 // DownloadToFile downloads a URL to imageDir/filename.
