@@ -6,6 +6,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,15 +24,16 @@ import (
 
 // WeChatHandler handles incoming Enterprise WeChat callbacks.
 type WeChatHandler struct {
-	cfg     *config.WeChatConfig
-	store   *store.Store
-	fetcher *fetcher.Fetcher
-	kf      *wechat.KFClient
+	cfg           *config.WeChatConfig
+	store         *store.Store
+	fetcher       *fetcher.Fetcher
+	kf            *wechat.KFClient
+	serverBaseURL string
 }
 
 // NewWeChatHandler creates a new WeChatHandler.
-func NewWeChatHandler(cfg *config.WeChatConfig, s *store.Store, f *fetcher.Fetcher, kf *wechat.KFClient) *WeChatHandler {
-	return &WeChatHandler{cfg: cfg, store: s, fetcher: f, kf: kf}
+func NewWeChatHandler(cfg *config.WeChatConfig, s *store.Store, f *fetcher.Fetcher, kf *wechat.KFClient, serverBaseURL string) *WeChatHandler {
+	return &WeChatHandler{cfg: cfg, store: s, fetcher: f, kf: kf, serverBaseURL: serverBaseURL}
 }
 
 // VerifyURL handles GET requests for Enterprise WeChat URL verification.
@@ -400,6 +405,17 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		if msg.Text == nil {
 			return
 		}
+		// Check if text contains a video URL
+		if videoURL := extractVideoURL(msg.Text.Content); videoURL != "" {
+			title := strings.TrimSpace(msg.Text.Content)
+			// Extract title before the URL
+			if idx := strings.Index(title, "http"); idx > 0 {
+				title = strings.TrimSpace(title[:idx])
+				title = strings.Trim(title, "【】")
+			}
+			go h.downloadVideoForUser(videoURL, title, msg.MsgID, now, user.ID)
+			return
+		}
 		m := &model.Message{
 			MsgID:     msg.MsgID,
 			Type:      "memo",
@@ -418,6 +434,8 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		cleanedURL := cleanURL(msg.Link.URL)
 		if strings.Contains(msg.Link.URL, "mp.weixin.qq.com") {
 			go h.fetchArticleForUser(msg.Link.URL, msg.Link.Title, msg.MsgID, now, user.ID)
+		} else if isVideoURL(cleanedURL) {
+			go h.downloadVideoForUser(cleanedURL, msg.Link.Title, msg.MsgID, now, user.ID)
 		} else {
 			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.MsgID, now, user.ID)
 		}
@@ -687,6 +705,127 @@ func cleanURL(rawURL string) string {
 	u.RawQuery = q.Encode()
 	u.Fragment = ""
 	return u.String()
+}
+
+// extractVideoURL extracts a video platform URL from text content.
+func extractVideoURL(text string) string {
+	// Find URLs in text
+	re := regexp.MustCompile(`https?://[^\s]+`)
+	urls := re.FindAllString(text, -1)
+	for _, u := range urls {
+		if isVideoURL(u) {
+			return u
+		}
+	}
+	return ""
+}
+
+// isVideoURL checks if a URL is from a known video platform.
+func isVideoURL(rawURL string) bool {
+	videoHosts := []string{
+		"youtube.com", "youtu.be", "m.youtube.com",
+		"bilibili.com", "b23.tv",
+		"douyin.com", "v.douyin.com",
+		"tiktok.com",
+		"ixigua.com",
+		"weibo.com/tv",
+	}
+	lower := strings.ToLower(rawURL)
+	for _, host := range videoHosts {
+		if strings.Contains(lower, host) {
+			return true
+		}
+	}
+	// Toutiao video URLs
+	if strings.Contains(lower, "toutiao.com/video/") {
+		return true
+	}
+	return false
+}
+
+// downloadVideoForUser downloads a video using yt-dlp and saves as a video message.
+func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID string, now time.Time, userID int64) {
+	log.Printf("INFO: downloading video: %s", videoURL)
+
+	// Run yt-dlp to download video
+	videoDir := filepath.Join(h.store.DataDir(), "videos")
+	if err := os.MkdirAll(videoDir, 0o755); err != nil {
+		log.Printf("ERROR: creating video dir: %v", err)
+		return
+	}
+
+	// Use yt-dlp with output template
+	outTemplate := filepath.Join(videoDir, "%(id)s.%(ext)s")
+	cmd := exec.Command("/home/growthning/.local/bin/yt-dlp",
+		"-f", "bv*+ba/b",
+		"--no-playlist",
+		"--max-filesize", "100M",
+		"-o", outTemplate,
+		"--print", "after_move:filepath",
+		"--no-simulate",
+		"--merge-output-format", "mp4",
+		videoURL,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("ERROR: yt-dlp failed for %s: %v, output: %s", videoURL, err, string(output))
+		m := &model.Message{
+			MsgID:     msgID,
+			Type:      "memo",
+			Content:   fmt.Sprintf("[%s](%s) (视频下载失败)", title, videoURL),
+			Title:     title,
+			SourceURL: videoURL,
+			CreatedAt: now,
+			UserID:    userID,
+		}
+		h.store.InsertMessage(m)
+		return
+	}
+
+	// Extract filename from last line of output (yt-dlp prints filepath on last line)
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	filePath := strings.TrimSpace(lines[len(lines)-1])
+	filename := filepath.Base(filePath)
+
+	// Verify file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		log.Printf("ERROR: yt-dlp output file not found: %s, full output: %s", filePath, string(output))
+		m := &model.Message{
+			MsgID:     msgID,
+			Type:      "memo",
+			Content:   fmt.Sprintf("[%s](%s) (视频文件未找到)", title, videoURL),
+			Title:     title,
+			SourceURL: videoURL,
+			CreatedAt: now,
+			UserID:    userID,
+		}
+		h.store.InsertMessage(m)
+		return
+	}
+	log.Printf("INFO: video downloaded: %s", filename)
+
+	// Get file size for display
+	var sizeStr string
+	if info, err := os.Stat(filePath); err == nil {
+		sizeMB := float64(info.Size()) / 1024 / 1024
+		sizeStr = fmt.Sprintf("%.1fMB", sizeMB)
+	}
+	downloadURL := fmt.Sprintf("%s/api/videos/%s", h.serverBaseURL, filename)
+	content := fmt.Sprintf("**%s**\n%s\n[视频已下载 (%s)](%s)", title, videoURL, sizeStr, downloadURL)
+
+	m := &model.Message{
+		MsgID:     msgID,
+		Type:      "video",
+		Content:   content,
+		Title:     title,
+		Filename:  filename,
+		SourceURL: videoURL,
+		CreatedAt: now,
+		UserID:    userID,
+	}
+	if _, err := h.store.InsertMessage(m); err != nil {
+		log.Printf("ERROR: inserting video message: %v", err)
+	}
 }
 
 // mediaExtFromContentType returns a file extension based on content-type.

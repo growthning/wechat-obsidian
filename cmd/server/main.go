@@ -52,7 +52,8 @@ func main() {
 	kfClient := wechat.NewKFClient(kfCorpID, kfSecret)
 
 	// init handlers
-	wechatHandler := handler.NewWeChatHandler(&cfg.WeChat, db, f, kfClient)
+	serverBaseURL := fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port)
+	wechatHandler := handler.NewWeChatHandler(&cfg.WeChat, db, f, kfClient, serverBaseURL)
 	syncHandler := handler.NewSyncHandler(cfg.Server.APIKey, db, f)
 	imagesHandler := handler.NewImagesHandler(cfg.Server.APIKey, db)
 
@@ -80,6 +81,7 @@ func main() {
 	r.GET("/api/sync", syncHandler.GetMessages)
 	r.POST("/api/sync/ack", syncHandler.AckMessages)
 	r.GET("/api/images/:filename", imagesHandler.ServeImage)
+	r.GET("/api/videos/:filename", imagesHandler.ServeVideo)
 	r.POST("/api/save", syncHandler.SaveURL)
 	r.GET("/api/admin/users", syncHandler.ListUsers)
 	r.GET("/health", func(c *gin.Context) {

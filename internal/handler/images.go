@@ -45,3 +45,17 @@ func (h *ImagesHandler) ServeImage(c *gin.Context) {
 
 	c.File(imagePath)
 }
+
+// ServeVideo handles GET /api/videos/:filename — serves a stored video file.
+func (h *ImagesHandler) ServeVideo(c *gin.Context) {
+	rawFilename := c.Param("filename")
+	filename := filepath.Base(rawFilename)
+	videoPath := filepath.Join(h.store.DataDir(), "videos", filename)
+
+	if _, err := os.Stat(videoPath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "video not found"})
+		return
+	}
+
+	c.File(videoPath)
+}

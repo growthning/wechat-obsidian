@@ -259,6 +259,10 @@ func (s *Store) CleanupSynced(retentionDays int) (int, error) {
 	return int(count), nil
 }
 
+func (s *Store) DataDir() string {
+	return s.dataDir
+}
+
 func (s *Store) ImagePath(filename string) string {
 	return filepath.Join(s.dataDir, "images", filename)
 }

@@ -17,6 +17,9 @@ export class VaultWriter {
       case "channels":
         await this.appendToDaily(msg, "视频号");
         break;
+      case "video":
+        await this.appendToDaily(msg, this.videoPlatform(msg));
+        break;
       case "memo":
       case "image":
       case "chat_record":
@@ -128,6 +131,16 @@ export class VaultWriter {
     if (!exists) {
       await this.app.vault.createFolder(normalizedPath);
     }
+  }
+
+  private videoPlatform(msg: SyncMessage): string {
+    const url = (msg.source_url || msg.content || "").toLowerCase();
+    if (url.includes("bilibili.com") || url.includes("b23.tv")) return "B站";
+    if (url.includes("toutiao.com") || url.includes("ixigua.com")) return "头条";
+    if (url.includes("youtube.com") || url.includes("youtu.be")) return "YouTube";
+    if (url.includes("douyin.com")) return "抖音";
+    if (url.includes("tiktok.com")) return "TikTok";
+    return "视频";
   }
 
   private formatDate(d: Date): string {

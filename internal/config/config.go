@@ -24,6 +24,7 @@ type Config struct {
 
 type ServerConfig struct {
 	Port   int    `yaml:"port"`
+	Host   string `yaml:"host"`
 	APIKey string `yaml:"api_key"`
 }
 
