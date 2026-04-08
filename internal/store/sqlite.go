@@ -1,8 +1,11 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -23,7 +26,7 @@ func New(dataDir string) (*Store, error) {
 	}
 
 	dbPath := filepath.Join(dataDir, "wechat.db")
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode=WAL")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode=WAL&_pragma=busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -62,16 +65,31 @@ func (s *Store) migrate() error {
 			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (message_id) REFERENCES messages(id)
 		);
+
+		CREATE TABLE IF NOT EXISTS users (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			external_userid TEXT NOT NULL UNIQUE,
+			api_key         TEXT NOT NULL UNIQUE,
+			created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add user_id column to messages (ignore error if already exists)
+	s.db.Exec(`ALTER TABLE messages ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)`)
+
+	return nil
 }
 
 func (s *Store) InsertMessage(msg *model.Message) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO messages (msg_id, type, content, title, filename, source_url, raw_xml, synced, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO messages (msg_id, type, content, title, filename, source_url, raw_xml, synced, created_at, user_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.MsgID, msg.Type, msg.Content, msg.Title, msg.Filename, msg.SourceURL,
-		msg.RawXML, boolToInt(msg.Synced), msg.CreatedAt,
+		msg.RawXML, boolToInt(msg.Synced), msg.CreatedAt, msg.UserID,
 	)
 	if err != nil {
 		return 0, err
@@ -96,15 +114,19 @@ func (s *Store) InsertAttachment(att *model.Attachment) (int64, error) {
 	return res.LastInsertId()
 }
 
-func (s *Store) GetUnsynced(sinceID int64, limit int) ([]model.MessageWithImages, bool, error) {
-	rows, err := s.db.Query(
-		`SELECT id, type, content, title, filename, source_url, raw_xml, synced, created_at
+func (s *Store) GetUnsynced(sinceID int64, limit int, userID int64) ([]model.MessageWithImages, bool, error) {
+	query := `SELECT id, type, content, title, filename, source_url, raw_xml, synced, created_at
 		 FROM messages
-		 WHERE id > ? AND synced = 0
-		 ORDER BY id ASC
-		 LIMIT ?`,
-		sinceID, limit+1,
-	)
+		 WHERE id > ? AND synced = 0`
+	args := []interface{}{sinceID}
+	if userID > 0 {
+		query += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY id ASC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -165,13 +187,148 @@ func (s *Store) getAttachmentFilenames(messageID int64) ([]string, error) {
 	return filenames, rows.Err()
 }
 
-func (s *Store) AckMessages(lastID int64) error {
+func (s *Store) AckMessages(lastID int64, userID int64) error {
+	if userID > 0 {
+		_, err := s.db.Exec(`UPDATE messages SET synced = 1 WHERE id <= ? AND user_id = ?`, lastID, userID)
+		return err
+	}
 	_, err := s.db.Exec(`UPDATE messages SET synced = 1 WHERE id <= ?`, lastID)
 	return err
 }
 
+func (s *Store) CleanupSynced(retentionDays int) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. Query attachment filenames for messages to delete
+	rows, err := tx.Query(
+		`SELECT a.filename FROM attachments a
+		 JOIN messages m ON a.message_id = m.id
+		 WHERE m.synced = 1 AND m.created_at < datetime('now', '-' || CAST(? AS TEXT) || ' days')`,
+		retentionDays,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("query attachments: %w", err)
+	}
+	var filenames []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan attachment: %w", err)
+		}
+		filenames = append(filenames, f)
+	}
+	rows.Close()
+
+	// 2. Delete attachments
+	_, err = tx.Exec(
+		`DELETE FROM attachments WHERE message_id IN (
+			SELECT id FROM messages WHERE synced = 1 AND created_at < datetime('now', '-' || CAST(? AS TEXT) || ' days')
+		)`, retentionDays,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete attachments: %w", err)
+	}
+
+	// 3. Delete messages
+	res, err := tx.Exec(
+		`DELETE FROM messages WHERE synced = 1 AND created_at < datetime('now', '-' || CAST(? AS TEXT) || ' days')`,
+		retentionDays,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete messages: %w", err)
+	}
+	count, _ := res.RowsAffected()
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit tx: %w", err)
+	}
+
+	// 4. Delete image files from disk (best-effort)
+	for _, fname := range filenames {
+		path := s.ImagePath(fname)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("WARN: cleanup failed to remove image %s: %v", path, err)
+		}
+	}
+
+	return int(count), nil
+}
+
 func (s *Store) ImagePath(filename string) string {
 	return filepath.Join(s.dataDir, "images", filename)
+}
+
+func (s *Store) CreateUser(externalUserID string) (*model.User, error) {
+	// Generate 32-byte hex API key
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("generate api key: %w", err)
+	}
+	apiKey := hex.EncodeToString(b)
+
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO users (external_userid, api_key) VALUES (?, ?)`,
+		externalUserID, apiKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert user: %w", err)
+	}
+
+	// Return the user (handles both new and existing)
+	return s.GetUserByExternalID(externalUserID)
+}
+
+func (s *Store) GetUserByAPIKey(apiKey string) (*model.User, error) {
+	var u model.User
+	err := s.db.QueryRow(
+		`SELECT id, external_userid, api_key, created_at FROM users WHERE api_key = ?`,
+		apiKey,
+	).Scan(&u.ID, &u.ExternalUserID, &u.APIKey, &u.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Store) GetUserByExternalID(externalUserID string) (*model.User, error) {
+	var u model.User
+	err := s.db.QueryRow(
+		`SELECT id, external_userid, api_key, created_at FROM users WHERE external_userid = ?`,
+		externalUserID,
+	).Scan(&u.ID, &u.ExternalUserID, &u.APIKey, &u.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Store) ListUsers() ([]model.User, error) {
+	rows, err := s.db.Query(`SELECT id, external_userid, api_key, created_at FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []model.User
+	for rows.Next() {
+		var u model.User
+		if err := rows.Scan(&u.ID, &u.ExternalUserID, &u.APIKey, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
 }
 
 func (s *Store) Close() error {

@@ -306,8 +306,13 @@ func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix strin
 			return
 		}
 
+		// Process events first (for welcome_code), then customer messages
 		for _, msg := range resp.MsgList {
-			// Only process messages from WeChat customers (origin=3)
+			if msg.MsgType == "event" && msg.Event != nil {
+				h.processKFEventMsg(&msg)
+			}
+		}
+		for _, msg := range resp.MsgList {
 			if msg.Origin != 3 {
 				continue
 			}
@@ -321,6 +326,40 @@ func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix strin
 	}
 }
 
+// processKFEventMsg handles KF event messages (enter_session, etc.).
+func (h *WeChatHandler) processKFEventMsg(msg *wechat.KFMessage) {
+	if msg.Event == nil {
+		return
+	}
+	log.Printf("INFO: KF event: type=%s, user=%s, welcome_code=%s",
+		msg.Event.EventType, msg.Event.ExternalUID, msg.Event.WelcomeCode)
+
+	if msg.Event.EventType == "enter_session" && msg.Event.WelcomeCode != "" {
+		// Auto-register user if new
+		extUID := msg.Event.ExternalUID
+		user, err := h.store.GetUserByExternalID(extUID)
+		if err != nil {
+			log.Printf("ERROR: looking up user for welcome: %v", err)
+			return
+		}
+		if user == nil {
+			user, err = h.store.CreateUser(extUID)
+			if err != nil {
+				log.Printf("ERROR: creating user for welcome: %v", err)
+				return
+			}
+			log.Printf("INFO: auto-registered user %s via enter_session", extUID)
+		}
+
+		reply := fmt.Sprintf("欢迎使用 WeChat-Obsidian 同步服务！\n\n你的 API Key：\n%s\n\n请在 Obsidian 插件设置中填入此 Key。", user.APIKey)
+		if err := h.kf.SendMsgOnEvent(msg.Event.WelcomeCode, reply); err != nil {
+			log.Printf("WARN: failed to send welcome via event: %v", err)
+		} else {
+			log.Printf("INFO: sent welcome to user %s", extUID)
+		}
+	}
+}
+
 // processKFMessage processes a single message from the KF sync_msg API.
 func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix string) {
 	// Debug: log raw message JSON
@@ -329,6 +368,32 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 	}
 	// Use message send_time instead of current time
 	now := time.Unix(msg.SendTime, 0)
+
+	// Auto-register new users on first message (silent, no reply)
+	user, err := h.store.GetUserByExternalID(msg.ExternalUserID)
+	if err != nil {
+		log.Printf("ERROR: looking up user %s: %v", msg.ExternalUserID, err)
+		return
+	}
+	if user == nil {
+		user, err = h.store.CreateUser(msg.ExternalUserID)
+		if err != nil {
+			log.Printf("ERROR: auto-creating user %s: %v", msg.ExternalUserID, err)
+			return
+		}
+		log.Printf("INFO: auto-registered user %s, api_key=%s", msg.ExternalUserID, user.APIKey)
+	}
+
+	// Reply API key when user sends "注册" (only for recent messages to avoid batch duplicates)
+	if msg.MsgType == "text" && msg.Text != nil && strings.TrimSpace(msg.Text.Content) == "注册" {
+		if time.Since(now).Abs() < 30*time.Second {
+			reply := fmt.Sprintf("你的 API Key：\n%s\n\n请在 Obsidian 插件设置中填入此 Key。", user.APIKey)
+			if err := h.kf.SendTextMessage(msg.OpenKFID, msg.ExternalUserID, reply); err != nil {
+				log.Printf("WARN: failed to reply API key: %v", err)
+			}
+		}
+		return
+	}
 
 	switch msg.MsgType {
 	case "text":
@@ -340,6 +405,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 			Type:      "memo",
 			Content:   msg.Text.Content,
 			CreatedAt: now,
+			UserID:    user.ID,
 		}
 		if _, err := h.store.InsertMessage(m); err != nil {
 			log.Printf("ERROR: inserting KF text message: %v", err)
@@ -351,16 +417,16 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		}
 		cleanedURL := cleanURL(msg.Link.URL)
 		if strings.Contains(msg.Link.URL, "mp.weixin.qq.com") {
-			go h.fetchArticle(msg.Link.URL, msg.Link.Title, msg.MsgID, now)
+			go h.fetchArticleForUser(msg.Link.URL, msg.Link.Title, msg.MsgID, now, user.ID)
 		} else {
-			go h.fetchGenericOrMemo(cleanedURL, msg.Link.Title, msg.MsgID, now)
+			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.MsgID, now, user.ID)
 		}
 
 	case "image":
 		if msg.Image == nil {
 			return
 		}
-		h.processKFImage(msg.Image.MediaID, datePrefix, now)
+		h.processKFImageForUser(msg.Image.MediaID, datePrefix, now, user.ID)
 
 	case "channels":
 		if msg.Channels == nil {
@@ -378,6 +444,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 			Content:   content,
 			Title:     msg.Channels.Title,
 			CreatedAt: now,
+			UserID:    user.ID,
 		}
 		if _, err := h.store.InsertMessage(m); err != nil {
 			log.Printf("ERROR: inserting KF channels message: %v", err)
@@ -385,6 +452,156 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 
 	default:
 		log.Printf("INFO: unhandled KF message type: %s (msgid=%s)", msg.MsgType, msg.MsgID)
+	}
+}
+
+
+// fetchArticleForUser fetches a WeChat article and saves it with user ID.
+func (h *WeChatHandler) fetchArticleForUser(url, title, msgID string, now time.Time, userID int64) {
+	result, err := h.fetcher.FetchArticle(url, now)
+	if err != nil {
+		log.Printf("ERROR: fetching article %s: %v", url, err)
+		m := &model.Message{
+			MsgID:     msgID,
+			Type:      "memo",
+			Content:   fmt.Sprintf("(article fetch failed: %v) [%s](%s)", err, title, url),
+			Title:     title,
+			SourceURL: url,
+			CreatedAt: now,
+			UserID:    userID,
+		}
+		if _, err2 := h.store.InsertMessage(m); err2 != nil {
+			log.Printf("ERROR: inserting article error memo: %v", err2)
+		}
+		return
+	}
+
+	m := &model.Message{
+		MsgID:     msgID,
+		Type:      "article",
+		Content:   result.Content,
+		Title:     result.Title,
+		Filename:  result.Filename,
+		SourceURL: url,
+		CreatedAt: now,
+		UserID:    userID,
+	}
+	dbID, err := h.store.InsertMessage(m)
+	if err != nil {
+		log.Printf("ERROR: inserting article message: %v", err)
+		return
+	}
+
+	for _, imgFilename := range result.Images {
+		att := &model.Attachment{
+			MessageID:   dbID,
+			Filename:    imgFilename,
+			ContentType: "image/jpeg",
+			CreatedAt:   now,
+		}
+		if _, err := h.store.InsertAttachment(att); err != nil {
+			log.Printf("ERROR: inserting article image attachment %s: %v", imgFilename, err)
+		}
+	}
+}
+
+// fetchGenericOrMemoForUser tries to fetch a URL as an article with user ID; falls back to memo.
+func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, msgID string, now time.Time, userID int64) {
+	result, err := h.fetcher.FetchGenericArticle(url, now)
+	if err != nil {
+		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
+		content := fmt.Sprintf("[%s](%s)", title, url)
+		m := &model.Message{
+			MsgID:     msgID,
+			Type:      "memo",
+			Content:   content,
+			Title:     title,
+			SourceURL: url,
+			CreatedAt: now,
+			UserID:    userID,
+		}
+		if _, err2 := h.store.InsertMessage(m); err2 != nil {
+			log.Printf("ERROR: inserting link memo: %v", err2)
+		}
+		return
+	}
+
+	m := &model.Message{
+		MsgID:     msgID,
+		Type:      "article",
+		Content:   result.Content,
+		Title:     result.Title,
+		Filename:  result.Filename,
+		SourceURL: url,
+		CreatedAt: now,
+		UserID:    userID,
+	}
+	dbID, err := h.store.InsertMessage(m)
+	if err != nil {
+		log.Printf("ERROR: inserting generic article: %v", err)
+		return
+	}
+	for _, img := range result.Images {
+		att := &model.Attachment{
+			MessageID:   dbID,
+			Filename:    img,
+			ContentType: "image/jpeg",
+			CreatedAt:   now,
+		}
+		if _, err := h.store.InsertAttachment(att); err != nil {
+			log.Printf("ERROR: inserting generic article image %s: %v", img, err)
+		}
+	}
+	log.Printf("INFO: saved generic article: %s (%d images)", result.Title, len(result.Images))
+}
+
+// processKFImageForUser downloads a media file via KF API and saves it as an image message with user ID.
+func (h *WeChatHandler) processKFImageForUser(mediaID, datePrefix string, now time.Time, userID int64) {
+	data, contentType, err := h.kf.DownloadMedia(mediaID)
+	if err != nil {
+		log.Printf("ERROR: downloading KF media %s: %v", mediaID, err)
+		m := &model.Message{
+			Type:      "memo",
+			Content:   fmt.Sprintf("(KF image download failed: %v) media_id=%s", err, mediaID),
+			CreatedAt: now,
+			UserID:    userID,
+		}
+		if _, err2 := h.store.InsertMessage(m); err2 != nil {
+			log.Printf("ERROR: inserting KF image fallback memo: %v", err2)
+		}
+		return
+	}
+
+	ext := mediaExtFromContentType(contentType)
+	filename := fmt.Sprintf("img-%s-%s%s", datePrefix, mediaID[:8], ext)
+
+	if err := h.fetcher.SaveFile(filename, data); err != nil {
+		log.Printf("ERROR: saving KF image %s: %v", filename, err)
+		return
+	}
+
+	m := &model.Message{
+		Type:      "image",
+		Content:   fmt.Sprintf("![[%s]]", filename),
+		Filename:  filename,
+		CreatedAt: now,
+		UserID:    userID,
+	}
+	msgDBID, err := h.store.InsertMessage(m)
+	if err != nil {
+		log.Printf("ERROR: inserting KF image message: %v", err)
+		return
+	}
+
+	att := &model.Attachment{
+		MessageID:   msgDBID,
+		Filename:    filename,
+		ContentType: contentType,
+		Size:        int64(len(data)),
+		CreatedAt:   now,
+	}
+	if _, err := h.store.InsertAttachment(att); err != nil {
+		log.Printf("ERROR: inserting KF image attachment: %v", err)
 	}
 }
 

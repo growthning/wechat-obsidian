@@ -78,11 +78,10 @@ export class VaultWriter {
 
     const filePath = normalizePath(`${articleFolder}/${baseName}.md`);
 
-    // Handle filename collision
+    // Skip if article already exists
     const exists = await this.app.vault.adapter.exists(filePath);
-    let finalPath = filePath;
     if (exists) {
-      finalPath = filePath.replace(".md", `-${Date.now()}.md`);
+      return;
     }
 
     let content = msg.content;
@@ -95,7 +94,7 @@ export class VaultWriter {
       content += `\n\n---\nSource: ${msg.source_url}\n`;
     }
 
-    await this.app.vault.adapter.write(finalPath, content);
+    await this.app.vault.adapter.write(filePath, content);
 
     // Download article images into the same subfolder
     if (msg.images && msg.images.length > 0) {

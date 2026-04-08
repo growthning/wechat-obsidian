@@ -16,19 +16,35 @@ import (
 
 // SyncHandler handles message sync API requests.
 type SyncHandler struct {
-	apiKey  string
-	store   *store.Store
-	fetcher *fetcher.Fetcher
+	masterAPIKey string
+	store        *store.Store
+	fetcher      *fetcher.Fetcher
 }
 
 // NewSyncHandler creates a new SyncHandler.
-func NewSyncHandler(apiKey string, s *store.Store, f *fetcher.Fetcher) *SyncHandler {
-	return &SyncHandler{apiKey: apiKey, store: s, fetcher: f}
+func NewSyncHandler(masterAPIKey string, s *store.Store, f *fetcher.Fetcher) *SyncHandler {
+	return &SyncHandler{masterAPIKey: masterAPIKey, store: s, fetcher: f}
+}
+
+// authenticate checks the API key and returns the userID and whether it's an admin.
+func (h *SyncHandler) authenticate(apiKey string) (userID int64, isAdmin bool, err error) {
+	if apiKey == h.masterAPIKey {
+		return 0, true, nil
+	}
+	user, err := h.store.GetUserByAPIKey(apiKey)
+	if err != nil {
+		return 0, false, err
+	}
+	if user == nil {
+		return 0, false, fmt.Errorf("invalid api key")
+	}
+	return user.ID, false, nil
 }
 
 // GetMessages handles GET /api/sync — returns unsynced messages since a given ID.
 func (h *SyncHandler) GetMessages(c *gin.Context) {
-	if c.Query("apikey") != h.apiKey {
+	userID, _, err := h.authenticate(c.Query("apikey"))
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
 		return
 	}
@@ -43,7 +59,7 @@ func (h *SyncHandler) GetMessages(c *gin.Context) {
 		sinceID = parsed
 	}
 
-	messages, hasMore, err := h.store.GetUnsynced(sinceID, 50)
+	messages, hasMore, err := h.store.GetUnsynced(sinceID, 50, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch messages"})
 		return
@@ -61,7 +77,8 @@ func (h *SyncHandler) GetMessages(c *gin.Context) {
 
 // AckMessages handles POST /api/sync/ack — marks messages up to last_id as synced.
 func (h *SyncHandler) AckMessages(c *gin.Context) {
-	if c.Query("apikey") != h.apiKey {
+	userID, _, err := h.authenticate(c.Query("apikey"))
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
 		return
 	}
@@ -72,7 +89,7 @@ func (h *SyncHandler) AckMessages(c *gin.Context) {
 		return
 	}
 
-	if err := h.store.AckMessages(req.LastID); err != nil {
+	if err := h.store.AckMessages(req.LastID, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ack messages"})
 		return
 	}
@@ -82,7 +99,8 @@ func (h *SyncHandler) AckMessages(c *gin.Context) {
 
 // SaveURL handles POST /api/save — manually save a URL (article or plain link).
 func (h *SyncHandler) SaveURL(c *gin.Context) {
-	if c.Query("apikey") != h.apiKey {
+	userID, _, err := h.authenticate(c.Query("apikey"))
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
 		return
 	}
@@ -107,6 +125,7 @@ func (h *SyncHandler) SaveURL(c *gin.Context) {
 				Content:   fmt.Sprintf("[%s](%s)", req.URL, req.URL),
 				SourceURL: req.URL,
 				CreatedAt: now,
+				UserID:    userID,
 			}
 			h.store.InsertMessage(m)
 			return
@@ -119,6 +138,7 @@ func (h *SyncHandler) SaveURL(c *gin.Context) {
 			Filename:  result.Filename,
 			SourceURL: req.URL,
 			CreatedAt: now,
+			UserID:    userID,
 		}
 		msgID, err := h.store.InsertMessage(m)
 		if err != nil {
@@ -136,4 +156,20 @@ func (h *SyncHandler) SaveURL(c *gin.Context) {
 		}
 		log.Printf("INFO: SaveURL saved article: %s (%d images)", result.Title, len(result.Images))
 	}()
+}
+
+// ListUsers handles GET /api/admin/users — returns all registered users (admin only).
+func (h *SyncHandler) ListUsers(c *gin.Context) {
+	if c.Query("apikey") != h.masterAPIKey || h.masterAPIKey == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "admin access required"})
+		return
+	}
+
+	users, err := h.store.ListUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list users"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"users": users})
 }

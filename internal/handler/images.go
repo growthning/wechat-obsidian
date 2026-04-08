@@ -12,20 +12,24 @@ import (
 
 // ImagesHandler handles image file serving requests.
 type ImagesHandler struct {
-	apiKey string
-	store  *store.Store
+	masterAPIKey string
+	store        *store.Store
 }
 
 // NewImagesHandler creates a new ImagesHandler.
-func NewImagesHandler(apiKey string, s *store.Store) *ImagesHandler {
-	return &ImagesHandler{apiKey: apiKey, store: s}
+func NewImagesHandler(masterAPIKey string, s *store.Store) *ImagesHandler {
+	return &ImagesHandler{masterAPIKey: masterAPIKey, store: s}
 }
 
 // ServeImage handles GET /api/images/:filename — serves a stored image file.
 func (h *ImagesHandler) ServeImage(c *gin.Context) {
-	if c.Query("apikey") != h.apiKey {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
-		return
+	apiKey := c.Query("apikey")
+	if apiKey != h.masterAPIKey {
+		user, err := h.store.GetUserByAPIKey(apiKey)
+		if err != nil || user == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+			return
+		}
 	}
 
 	// Sanitize filename to prevent path traversal

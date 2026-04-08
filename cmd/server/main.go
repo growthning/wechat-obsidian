@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -55,6 +56,22 @@ func main() {
 	syncHandler := handler.NewSyncHandler(cfg.Server.APIKey, db, f)
 	imagesHandler := handler.NewImagesHandler(cfg.Server.APIKey, db)
 
+	// start cleanup goroutine
+	if cfg.Cleanup.Enabled {
+		go func() {
+			ticker := time.NewTicker(cfg.Cleanup.Interval)
+			defer ticker.Stop()
+			for range ticker.C {
+				count, err := db.CleanupSynced(cfg.Cleanup.RetentionDays)
+				if err != nil {
+					log.Printf("ERROR: cleanup failed: %v", err)
+				} else if count > 0 {
+					log.Printf("INFO: cleanup removed %d synced messages", count)
+				}
+			}
+		}()
+	}
+
 	// setup routes
 	r := gin.Default()
 
@@ -64,6 +81,7 @@ func main() {
 	r.POST("/api/sync/ack", syncHandler.AckMessages)
 	r.GET("/api/images/:filename", imagesHandler.ServeImage)
 	r.POST("/api/save", syncHandler.SaveURL)
+	r.GET("/api/admin/users", syncHandler.ListUsers)
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})

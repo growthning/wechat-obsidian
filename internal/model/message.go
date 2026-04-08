@@ -2,6 +2,13 @@ package model
 
 import "time"
 
+type User struct {
+	ID             int64     `json:"id"`
+	ExternalUserID string    `json:"external_userid"`
+	APIKey         string    `json:"api_key"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 type Message struct {
 	ID        int64     `json:"id"`
 	MsgID     string    `json:"-"`
@@ -13,6 +20,7 @@ type Message struct {
 	RawXML    string    `json:"-"`
 	Synced    bool      `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
+	UserID    int64     `json:"-"`
 }
 
 type Attachment struct {

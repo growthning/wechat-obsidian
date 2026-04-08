@@ -8,11 +8,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type CleanupConfig struct {
+	Enabled       bool          `yaml:"enabled"`
+	RetentionDays int           `yaml:"retention_days"`
+	Interval      time.Duration `yaml:"interval"`
+}
+
 type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	WeChat  WeChatConfig  `yaml:"wechat"`
 	Storage StorageConfig `yaml:"storage"`
 	Article ArticleConfig `yaml:"article"`
+	Cleanup CleanupConfig `yaml:"cleanup"`
 }
 
 type ServerConfig struct {
@@ -52,6 +59,11 @@ func Load(path string) (*Config, error) {
 		Article: ArticleConfig{
 			Timeout:   30 * time.Second,
 			MaxImages: 50,
+		},
+		Cleanup: CleanupConfig{
+			Enabled:       true,
+			RetentionDays: 7,
+			Interval:      1 * time.Hour,
 		},
 	}
 
