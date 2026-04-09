@@ -808,6 +808,8 @@ func (h *WeChatHandler) replyUser(openKFID, externalUserID, text string, sendTim
 
 // downloadVideoForUser downloads a video using yt-dlp and saves as a video message.
 func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
+	// Clean URL (resolve short links like b23.tv, strip tracking params)
+	videoURL = cleanURL(videoURL)
 	log.Printf("INFO: downloading video: %s", videoURL)
 
 	// Run yt-dlp to download video
