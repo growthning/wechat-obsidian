@@ -135,6 +135,40 @@ type KFChannelsMsg struct {
 	Title    string `json:"title"`     // 标题
 }
 
+// TransferToBot transfers a KF session to bot state (service_state=1),
+// so that human agents won't receive the messages.
+func (k *KFClient) TransferToBot(openKFID, externalUserID string) error {
+	token, err := k.GetAccessToken()
+	if err != nil {
+		return fmt.Errorf("getting access token: %w", err)
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"open_kfid":       openKFID,
+		"external_userid": externalUserID,
+		"service_state":   1,
+	})
+	url := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/kf/service_state/trans?access_token=%s", token)
+	resp, err := k.client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("transferring session: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decoding trans response: %w", err)
+	}
+	if result.ErrCode != 0 && result.ErrCode != 95062 {
+		// 95062 = already in target state, not an error
+		return fmt.Errorf("service_state trans error: %d %s", result.ErrCode, result.ErrMsg)
+	}
+	return nil
+}
+
 // syncMsgRequest is the request body for the sync_msg API.
 type syncMsgRequest struct {
 	Cursor   string `json:"cursor"`
@@ -189,26 +223,8 @@ func (k *KFClient) SendTextMessage(openKFID, externalUserID, content string) err
 		return fmt.Errorf("getting access token: %w", err)
 	}
 
-	// Transfer session to AI assistant state (service_state=1) to enable sending
-	transBody, _ := json.Marshal(map[string]interface{}{
-		"open_kfid":       openKFID,
-		"external_userid": externalUserID,
-		"service_state":   1,
-	})
-	transURL := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/kf/service_state/trans?access_token=%s", token)
-	transResp, err := k.client.Post(transURL, "application/json", bytes.NewReader(transBody))
-	if err != nil {
-		return fmt.Errorf("transferring session: %w", err)
-	}
-	var transResult struct {
-		ErrCode int    `json:"errcode"`
-		ErrMsg  string `json:"errmsg"`
-	}
-	json.NewDecoder(transResp.Body).Decode(&transResult)
-	transResp.Body.Close()
-	if transResult.ErrCode != 0 {
-		fmt.Printf("WARN: session trans: %d %s\n", transResult.ErrCode, transResult.ErrMsg)
-	}
+	// Ensure session is in bot state before sending
+	_ = k.TransferToBot(openKFID, externalUserID)
 
 	body := map[string]interface{}{
 		"touser":    externalUserID,

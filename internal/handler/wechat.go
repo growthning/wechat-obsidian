@@ -355,7 +355,16 @@ func (h *WeChatHandler) processKFEventMsg(msg *wechat.KFMessage) {
 	log.Printf("INFO: KF event: type=%s, user=%s, welcome_code=%s",
 		msg.Event.EventType, msg.Event.ExternalUID, msg.Event.WelcomeCode)
 
-	if msg.Event.EventType == "enter_session" && msg.Event.WelcomeCode != "" {
+	if msg.Event.EventType == "enter_session" {
+		// Transfer session to bot immediately so human agents don't receive messages
+		if err := h.kf.TransferToBot(msg.Event.OpenKFID, msg.Event.ExternalUID); err != nil {
+			log.Printf("WARN: failed to transfer session to bot: %v", err)
+		}
+
+		if msg.Event.WelcomeCode == "" {
+			return
+		}
+
 		// Auto-register user if new
 		extUID := msg.Event.ExternalUID
 		user, err := h.store.GetUserByExternalID(extUID)
