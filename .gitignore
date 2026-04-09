@@ -1,0 +1,6 @@
+data/
+*.db
+deploy.sh
+config.yaml
+wechat-obsidian-server
+obsidian-plugin/node_modules/

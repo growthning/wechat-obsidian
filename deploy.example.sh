@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-# Config
-VPS_HOST="growthning@35.212.133.212"
-SSH_KEY="/Users/liuning/.ssh/id_rsa"
-REMOTE_DIR="/home/growthning/wechat-obsidian"
-PLUGIN_DIR="/Users/liuning/nico_notes/.obsidian/plugins/wechat-sync"
+# Config — copy this file to deploy.sh and fill in your values
+VPS_HOST="user@your-server-ip"
+SSH_KEY="$HOME/.ssh/id_rsa"
+REMOTE_DIR="/home/user/wechat-obsidian"
+PLUGIN_DIR="$HOME/your-vault/.obsidian/plugins/wechat-sync"
 SSH="ssh -i $SSH_KEY $VPS_HOST"
 SCP="scp -i $SSH_KEY"
 
@@ -46,34 +46,11 @@ if [ "$STATUS" != "active" ]; then
   $SSH "sudo journalctl -u wechat-obsidian --no-pager -n 10"
   exit 1
 fi
-# Verify binary is new by checking health endpoint
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://35.212.133.212:8900/health")
-if [ "$HTTP_CODE" != "200" ]; then
-  echo "FAIL: health check returned $HTTP_CODE"
-  exit 1
-fi
-echo "OK (active, health=200)"
+echo "OK (active)"
 
 echo "=== 5. Deploy plugin ==="
 cp obsidian-plugin/main.js "$PLUGIN_DIR/main.js"
 echo "OK"
-
-if $RESET; then
-  echo "=== 5a. Reset local data ==="
-  rm -rf /Users/liuning/nico_notes/articles /Users/liuning/nico_notes/daily /Users/liuning/nico_notes/attachments 2>/dev/null || true
-  cat > "$PLUGIN_DIR/data.json" << 'CONF'
-{
-  "serverUrl": "http://35.212.133.212:8900",
-  "apiKey": "wechat-obsidian-sync-2026",
-  "pollInterval": 10,
-  "dailyFolder": "daily",
-  "articlesFolder": "articles",
-  "attachmentsFolder": "attachments",
-  "lastSyncedId": 0
-}
-CONF
-  echo "OK (restart Obsidian plugin to apply)"
-fi
 
 echo ""
 echo "=== Done ==="
