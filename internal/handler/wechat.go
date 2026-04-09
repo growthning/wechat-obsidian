@@ -400,6 +400,9 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		return
 	}
 
+	// Reply immediately to let user know we received the message
+	h.replyUser(msg.OpenKFID, msg.ExternalUserID, "✅ 已收到，正在处理...", now)
+
 	switch msg.MsgType {
 	case "text":
 		if msg.Text == nil {
@@ -413,7 +416,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 				title = strings.TrimSpace(title[:idx])
 				title = strings.Trim(title, "【】")
 			}
-			go h.downloadVideoForUser(videoURL, title, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
+			go h.downloadVideoForUser(videoURL, title, msg.MsgID, now, user.ID)
 			return
 		}
 		m := &model.Message{
@@ -425,8 +428,6 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		}
 		if _, err := h.store.InsertMessage(m); err != nil {
 			log.Printf("ERROR: inserting KF text message: %v", err)
-		} else {
-			h.replyUser(msg.OpenKFID, msg.ExternalUserID, "✅ 已收到")
 		}
 
 	case "link":
@@ -435,11 +436,11 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		}
 		cleanedURL := cleanURL(msg.Link.URL)
 		if strings.Contains(msg.Link.URL, "mp.weixin.qq.com") {
-			go h.fetchArticleForUser(msg.Link.URL, msg.Link.Title, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
+			go h.fetchArticleForUser(msg.Link.URL, msg.Link.Title, msg.MsgID, now, user.ID)
 		} else if isVideoURL(cleanedURL) {
-			go h.downloadVideoForUser(cleanedURL, msg.Link.Title, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
+			go h.downloadVideoForUser(cleanedURL, msg.Link.Title, msg.MsgID, now, user.ID)
 		} else {
-			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.Link.Desc, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
+			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.Link.Desc, msg.MsgID, now, user.ID)
 		}
 
 	case "image":
@@ -447,7 +448,6 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 			return
 		}
 		h.processKFImageForUser(msg.Image.MediaID, datePrefix, now, user.ID)
-		h.replyUser(msg.OpenKFID, msg.ExternalUserID, "✅ 已收到图片")
 
 	case "channels":
 		if msg.Channels == nil {
@@ -469,8 +469,6 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		}
 		if _, err := h.store.InsertMessage(m); err != nil {
 			log.Printf("ERROR: inserting KF channels message: %v", err)
-		} else {
-			h.replyUser(msg.OpenKFID, msg.ExternalUserID, "✅ 已收到")
 		}
 
 	default:
@@ -480,7 +478,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 
 
 // fetchArticleForUser fetches a WeChat article and saves it with user ID.
-func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
+func (h *WeChatHandler) fetchArticleForUser(url, title, msgID string, now time.Time, userID int64) {
 	result, err := h.fetcher.FetchArticle(url, now)
 	if err != nil {
 		log.Printf("ERROR: fetching article %s: %v", url, err)
@@ -496,7 +494,6 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externa
 		if _, err2 := h.store.InsertMessage(m); err2 != nil {
 			log.Printf("ERROR: inserting article error memo: %v", err2)
 		}
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title))
 		return
 	}
 
@@ -527,11 +524,10 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externa
 			log.Printf("ERROR: inserting article image attachment %s: %v", imgFilename, err)
 		}
 	}
-	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title))
 }
 
 // fetchGenericOrMemoForUser tries to fetch a URL as an article with user ID; falls back to memo.
-func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
+func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID string, now time.Time, userID int64) {
 	result, err := h.fetcher.FetchGenericArticle(url, now)
 	if err != nil {
 		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
@@ -551,7 +547,6 @@ func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openK
 		if _, err2 := h.store.InsertMessage(m); err2 != nil {
 			log.Printf("ERROR: inserting link memo: %v", err2)
 		}
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title))
 		return
 	}
 
@@ -582,7 +577,6 @@ func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openK
 		}
 	}
 	log.Printf("INFO: saved generic article: %s (%d images)", result.Title, len(result.Images))
-	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title))
 }
 
 // processKFImageForUser downloads a media file via KF API and saves it as an image message with user ID.
@@ -696,6 +690,9 @@ func truncateStr(s string, maxRunes int) string {
 
 // cleanURL strips tracking parameters from a URL.
 func cleanURL(rawURL string) string {
+	// Resolve short URL redirects (b23.tv, etc.) to get the real URL
+	rawURL = resolveShortURL(rawURL)
+
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return rawURL
@@ -707,16 +704,54 @@ func cleanURL(rawURL string) string {
 		if strings.HasPrefix(k, "utm_") ||
 			strings.HasPrefix(k, "share_") ||
 			strings.HasPrefix(k, "sharer_") ||
+			strings.HasPrefix(k, "from_spmid") ||
+			strings.HasPrefix(k, "spmid") ||
 			k == "tt_from" || k == "upstream_biz" || k == "wxshare_count" ||
 			k == "req_id_new" || k == "module_name" || k == "category_new" ||
 			k == "app" || k == "timestamp" || k == "mpshare" || k == "scene" ||
-			k == "srcid" {
+			k == "srcid" ||
+			// Bilibili tracking params
+			k == "buvid" || k == "mid" || k == "plat_id" || k == "unique_k" ||
+			k == "up_id" || k == "is_story_h5" || k == "-arouter" {
 			q.Del(key)
 		}
 	}
 	u.RawQuery = q.Encode()
 	u.Fragment = ""
 	return u.String()
+}
+
+// resolveShortURL follows redirects for known short URL services to get the real URL.
+func resolveShortURL(rawURL string) string {
+	shortHosts := []string{"b23.tv", "t.co", "bit.ly"}
+	lower := strings.ToLower(rawURL)
+	isShort := false
+	for _, h := range shortHosts {
+		if strings.Contains(lower, h) {
+			isShort = true
+			break
+		}
+	}
+	if !isShort {
+		return rawURL
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // don't follow, just get the redirect
+		},
+	}
+	resp, err := client.Head(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	defer resp.Body.Close()
+
+	if loc := resp.Header.Get("Location"); loc != "" {
+		return loc
+	}
+	return rawURL
 }
 
 // extractVideoURL extracts a video platform URL from text content.
@@ -756,15 +791,19 @@ func isVideoURL(rawURL string) bool {
 	return false
 }
 
-// replyUser sends a feedback message to the user via KF. Errors are logged but not propagated.
-func (h *WeChatHandler) replyUser(openKFID, externalUserID, text string) {
+// replyUser sends a feedback message to the user via KF.
+// Only replies to recent messages (within 60s) to avoid spamming on restart/batch processing.
+func (h *WeChatHandler) replyUser(openKFID, externalUserID, text string, sendTime time.Time) {
+	if time.Since(sendTime).Abs() > 60*time.Second {
+		return
+	}
 	if err := h.kf.SendTextMessage(openKFID, externalUserID, text); err != nil {
 		log.Printf("WARN: failed to reply user: %v", err)
 	}
 }
 
 // downloadVideoForUser downloads a video using yt-dlp and saves as a video message.
-func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
+func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID string, now time.Time, userID int64) {
 	log.Printf("INFO: downloading video: %s", videoURL)
 
 	// Run yt-dlp to download video
@@ -777,7 +816,7 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, e
 	// Use yt-dlp with output template
 	outTemplate := filepath.Join(videoDir, "%(id)s.%(ext)s")
 	cmd := exec.Command("/home/growthning/.local/bin/yt-dlp",
-		"-f", "bv*+ba/b",
+		"-f", "bestvideo*+bestaudio/best",
 		"--no-playlist",
 		"--max-filesize", "100M",
 		"-o", outTemplate,
@@ -799,7 +838,6 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, e
 			UserID:    userID,
 		}
 		h.store.InsertMessage(m)
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title))
 		return
 	}
 
@@ -821,7 +859,6 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, e
 			UserID:    userID,
 		}
 		h.store.InsertMessage(m)
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title))
 		return
 	}
 	log.Printf("INFO: video downloaded: %s", filename)
@@ -848,7 +885,6 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, e
 	if _, err := h.store.InsertMessage(m); err != nil {
 		log.Printf("ERROR: inserting video message: %v", err)
 	}
-	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存视频：%s", title))
 }
 
 // mediaExtFromContentType returns a file extension based on content-type.
