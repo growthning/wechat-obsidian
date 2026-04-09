@@ -103,6 +103,16 @@ func (s *Store) SetKV(key, value string) error {
 	return err
 }
 
+// MessageExists checks if a message with the given msg_id already exists.
+func (s *Store) MessageExists(msgID string) bool {
+	if msgID == "" {
+		return false
+	}
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE msg_id = ?`, msgID).Scan(&count)
+	return count > 0
+}
+
 func (s *Store) InsertMessage(msg *model.Message) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO messages (msg_id, type, content, title, filename, source_url, raw_xml, synced, created_at, user_id)

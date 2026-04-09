@@ -377,6 +377,11 @@ func (h *WeChatHandler) processKFEventMsg(msg *wechat.KFMessage) {
 
 // processKFMessage processes a single message from the KF sync_msg API.
 func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix string) {
+	// Skip already-processed messages (deduplication)
+	if h.store.MessageExists(msg.MsgID) {
+		return
+	}
+
 	// Debug: log raw message JSON
 	if rawJSON, err := json.Marshal(msg); err == nil {
 		log.Printf("DEBUG: KF message: %s", string(rawJSON))
