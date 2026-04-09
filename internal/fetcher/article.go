@@ -369,7 +369,7 @@ func (f *Fetcher) fetchWithYtdlp(articleURL string, now time.Time) (*ArticleResu
 	ctx, cancel := context.WithTimeout(context.Background(), f.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "yt-dlp",
+	cmd := exec.CommandContext(ctx, "/home/growthning/.local/bin/yt-dlp",
 		"--dump-json",
 		"--no-download",
 		"--no-playlist",
