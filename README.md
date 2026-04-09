@@ -1,5 +1,7 @@
 # WeChat-Obsidian Sync
 
+[中文文档](README_CN.md)
+
 Self-hosted tool to sync content from Enterprise WeChat (企业微信) to your Obsidian vault. Forward articles, videos, images, and messages to a WeChat customer service account, and they'll automatically appear in your Obsidian notes.
 
 ## Features
