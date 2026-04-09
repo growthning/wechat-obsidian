@@ -416,7 +416,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 				title = strings.TrimSpace(title[:idx])
 				title = strings.Trim(title, "【】")
 			}
-			go h.downloadVideoForUser(videoURL, title, msg.MsgID, now, user.ID)
+			go h.downloadVideoForUser(videoURL, title, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
 			return
 		}
 		m := &model.Message{
@@ -436,11 +436,11 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		}
 		cleanedURL := cleanURL(msg.Link.URL)
 		if strings.Contains(msg.Link.URL, "mp.weixin.qq.com") {
-			go h.fetchArticleForUser(msg.Link.URL, msg.Link.Title, msg.MsgID, now, user.ID)
+			go h.fetchArticleForUser(msg.Link.URL, msg.Link.Title, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
 		} else if isVideoURL(cleanedURL) {
-			go h.downloadVideoForUser(cleanedURL, msg.Link.Title, msg.MsgID, now, user.ID)
+			go h.downloadVideoForUser(cleanedURL, msg.Link.Title, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
 		} else {
-			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.Link.Desc, msg.MsgID, now, user.ID)
+			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.Link.Desc, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
 		}
 
 	case "image":
@@ -478,7 +478,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 
 
 // fetchArticleForUser fetches a WeChat article and saves it with user ID.
-func (h *WeChatHandler) fetchArticleForUser(url, title, msgID string, now time.Time, userID int64) {
+func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
 	result, err := h.fetcher.FetchArticle(url, now)
 	if err != nil {
 		log.Printf("ERROR: fetching article %s: %v", url, err)
@@ -494,6 +494,7 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID string, now time.T
 		if _, err2 := h.store.InsertMessage(m); err2 != nil {
 			log.Printf("ERROR: inserting article error memo: %v", err2)
 		}
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title), now)
 		return
 	}
 
@@ -524,10 +525,11 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID string, now time.T
 			log.Printf("ERROR: inserting article image attachment %s: %v", imgFilename, err)
 		}
 	}
+	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title), now)
 }
 
 // fetchGenericOrMemoForUser tries to fetch a URL as an article with user ID; falls back to memo.
-func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID string, now time.Time, userID int64) {
+func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
 	result, err := h.fetcher.FetchGenericArticle(url, now)
 	if err != nil {
 		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
@@ -547,6 +549,7 @@ func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID string
 		if _, err2 := h.store.InsertMessage(m); err2 != nil {
 			log.Printf("ERROR: inserting link memo: %v", err2)
 		}
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title), now)
 		return
 	}
 
@@ -577,6 +580,7 @@ func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID string
 		}
 	}
 	log.Printf("INFO: saved generic article: %s (%d images)", result.Title, len(result.Images))
+	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title), now)
 }
 
 // processKFImageForUser downloads a media file via KF API and saves it as an image message with user ID.
@@ -803,7 +807,7 @@ func (h *WeChatHandler) replyUser(openKFID, externalUserID, text string, sendTim
 }
 
 // downloadVideoForUser downloads a video using yt-dlp and saves as a video message.
-func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID string, now time.Time, userID int64) {
+func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
 	log.Printf("INFO: downloading video: %s", videoURL)
 
 	// Run yt-dlp to download video
@@ -838,6 +842,7 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID string, now 
 			UserID:    userID,
 		}
 		h.store.InsertMessage(m)
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title), now)
 		return
 	}
 
@@ -859,6 +864,7 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID string, now 
 			UserID:    userID,
 		}
 		h.store.InsertMessage(m)
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title), now)
 		return
 	}
 	log.Printf("INFO: video downloaded: %s", filename)
@@ -885,6 +891,7 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID string, now 
 	if _, err := h.store.InsertMessage(m); err != nil {
 		log.Printf("ERROR: inserting video message: %v", err)
 	}
+	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存视频：%s", title), now)
 }
 
 // mediaExtFromContentType returns a file extension based on content-type.
