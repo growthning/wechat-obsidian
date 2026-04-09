@@ -2,14 +2,17 @@ package fetcher
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -203,7 +206,16 @@ func (f *Fetcher) FetchGenericArticle(articleURL string, sendTime ...time.Time) 
 	if err == nil {
 		return result, nil
 	}
-	return nil, fmt.Errorf("all extractors failed: %w", err)
+	log.Printf("INFO: jina failed for %s: %v, trying yt-dlp", articleURL, err)
+
+	// 3. Fallback to yt-dlp metadata extraction (covers 1000+ sites)
+	result, err = f.fetchWithYtdlp(articleURL, now)
+	if err == nil {
+		return result, nil
+	}
+	log.Printf("INFO: yt-dlp metadata failed for %s: %v", articleURL, err)
+
+	return nil, fmt.Errorf("all extractors failed for %s", articleURL)
 }
 
 // fetchWithTrafilatura extracts article content locally using go-trafilatura.
@@ -351,6 +363,49 @@ func parseJinaResponse(raw string) (string, string) {
 	return title, raw
 }
 
+// fetchWithYtdlp uses yt-dlp --dump-json to extract page metadata as a universal fallback.
+// yt-dlp supports 1000+ sites and can extract title/description even for non-video pages.
+func (f *Fetcher) fetchWithYtdlp(articleURL string, now time.Time) (*ArticleResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), f.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "yt-dlp",
+		"--dump-json",
+		"--no-download",
+		"--no-playlist",
+		articleURL,
+	)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp metadata: %w", err)
+	}
+
+	var meta struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Uploader    string `json:"uploader"`
+		WebpageURL  string `json:"webpage_url"`
+	}
+	if err := json.Unmarshal(output, &meta); err != nil {
+		return nil, fmt.Errorf("parsing yt-dlp json: %w", err)
+	}
+
+	content := strings.TrimSpace(meta.Description)
+	if len(content) < 10 {
+		return nil, fmt.Errorf("yt-dlp description too short")
+	}
+
+	title := meta.Title
+	if title == "" {
+		title = "untitled"
+	}
+	source := meta.Uploader
+	if source == "" {
+		source = extractDomain(articleURL)
+	}
+
+	return f.buildArticleResult(articleURL, title, source, content, now)
+}
 
 // buildArticleResult creates an ArticleResult with frontmatter, image downloads, etc.
 func (f *Fetcher) buildArticleResult(articleURL, title, source, markdown string, now time.Time) (*ArticleResult, error) {

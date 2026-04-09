@@ -437,7 +437,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		} else if isVideoURL(cleanedURL) {
 			go h.downloadVideoForUser(cleanedURL, msg.Link.Title, msg.MsgID, now, user.ID)
 		} else {
-			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.MsgID, now, user.ID)
+			go h.fetchGenericOrMemoForUser(cleanedURL, msg.Link.Title, msg.Link.Desc, msg.MsgID, now, user.ID)
 		}
 
 	case "image":
@@ -524,11 +524,14 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID string, now time.T
 }
 
 // fetchGenericOrMemoForUser tries to fetch a URL as an article with user ID; falls back to memo.
-func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, msgID string, now time.Time, userID int64) {
+func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID string, now time.Time, userID int64) {
 	result, err := h.fetcher.FetchGenericArticle(url, now)
 	if err != nil {
 		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
 		content := fmt.Sprintf("[%s](%s)", title, url)
+		if desc != "" {
+			content += "\n\n" + desc
+		}
 		m := &model.Message{
 			MsgID:     msgID,
 			Type:      "memo",
@@ -729,6 +732,7 @@ func isVideoURL(rawURL string) bool {
 		"tiktok.com",
 		"ixigua.com",
 		"weibo.com/tv",
+		"x.com", "twitter.com",
 	}
 	lower := strings.ToLower(rawURL)
 	for _, host := range videoHosts {

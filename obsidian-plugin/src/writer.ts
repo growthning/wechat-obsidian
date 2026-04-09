@@ -141,6 +141,7 @@ export class VaultWriter {
     if (url.includes("youtube.com") || url.includes("youtu.be")) return "YouTube";
     if (url.includes("douyin.com")) return "抖音";
     if (url.includes("tiktok.com")) return "TikTok";
+    if (url.includes("x.com") || url.includes("twitter.com")) return "X";
     return "视频";
   }
 
