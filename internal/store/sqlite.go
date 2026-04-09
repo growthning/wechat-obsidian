@@ -81,7 +81,26 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE messages ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)`)
 
+	// KV store for persistent state (e.g. KF sync cursor)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+
 	return nil
+}
+
+// GetKV retrieves a value by key from the kv store.
+func (s *Store) GetKV(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM kv WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
+}
+
+// SetKV sets a key-value pair in the kv store (upsert).
+func (s *Store) SetKV(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?`, key, value, value)
+	return err
 }
 
 func (s *Store) InsertMessage(msg *model.Message) (int64, error) {

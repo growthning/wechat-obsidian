@@ -202,7 +202,7 @@ func (h *WeChatHandler) processMessage(msg *wechat.IncomingMessage, rawXML strin
 
 // fetchArticle fetches a WeChat article and saves it as an article message.
 func (h *WeChatHandler) fetchArticle(url, title, msgID string, now time.Time) {
-	result, err := h.fetcher.FetchArticle(url, now)
+	result, err := h.fetcher.FetchArticle(url)
 	if err != nil {
 		log.Printf("ERROR: fetching article %s: %v", url, err)
 		// Save as memo with error
@@ -250,7 +250,7 @@ func (h *WeChatHandler) fetchArticle(url, title, msgID string, now time.Time) {
 
 // fetchGenericOrMemo tries to fetch a non-WeChat URL as an article; falls back to memo.
 func (h *WeChatHandler) fetchGenericOrMemo(url, title, msgID string, now time.Time) {
-	result, err := h.fetcher.FetchGenericArticle(url, now)
+	result, err := h.fetcher.FetchGenericArticle(url)
 	if err != nil {
 		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
 		content := fmt.Sprintf("[%s](%s)", title, url)
@@ -303,7 +303,10 @@ func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix strin
 		return
 	}
 
-	cursor := ""
+	// Restore cursor from persistent storage to avoid reprocessing messages after restart
+	cursorKey := "kf_cursor_" + openKFID
+	cursor, _ := h.store.GetKV(cursorKey)
+
 	for {
 		resp, err := h.kf.SyncMessages(callbackToken, cursor, openKFID)
 		if err != nil {
@@ -322,6 +325,13 @@ func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix strin
 				continue
 			}
 			h.processKFMessage(&msg, datePrefix)
+		}
+
+		// Persist cursor so we don't reprocess these messages after restart
+		if resp.NextCursor != "" {
+			if err := h.store.SetKV(cursorKey, resp.NextCursor); err != nil {
+				log.Printf("ERROR: persisting KF cursor: %v", err)
+			}
 		}
 
 		if resp.HasMore != 1 || resp.NextCursor == "" {
@@ -401,7 +411,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 	}
 
 	// Reply immediately to let user know we received the message
-	h.replyUser(msg.OpenKFID, msg.ExternalUserID, "✅ 已收到，正在处理...", now)
+	h.replyUser(msg.OpenKFID, msg.ExternalUserID, "✅ 已收到，正在处理...")
 
 	switch msg.MsgType {
 	case "text":
@@ -479,7 +489,7 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 
 // fetchArticleForUser fetches a WeChat article and saves it with user ID.
 func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
-	result, err := h.fetcher.FetchArticle(url, now)
+	result, err := h.fetcher.FetchArticle(url)
 	if err != nil {
 		log.Printf("ERROR: fetching article %s: %v", url, err)
 		m := &model.Message{
@@ -494,7 +504,7 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externa
 		if _, err2 := h.store.InsertMessage(m); err2 != nil {
 			log.Printf("ERROR: inserting article error memo: %v", err2)
 		}
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title), now)
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title))
 		return
 	}
 
@@ -525,12 +535,12 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externa
 			log.Printf("ERROR: inserting article image attachment %s: %v", imgFilename, err)
 		}
 	}
-	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title), now)
+	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title))
 }
 
 // fetchGenericOrMemoForUser tries to fetch a URL as an article with user ID; falls back to memo.
 func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
-	result, err := h.fetcher.FetchGenericArticle(url, now)
+	result, err := h.fetcher.FetchGenericArticle(url)
 	if err != nil {
 		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
 		content := fmt.Sprintf("[%s](%s)", title, url)
@@ -549,7 +559,7 @@ func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openK
 		if _, err2 := h.store.InsertMessage(m); err2 != nil {
 			log.Printf("ERROR: inserting link memo: %v", err2)
 		}
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title), now)
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("📌 已保存链接：%s", title))
 		return
 	}
 
@@ -580,7 +590,7 @@ func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openK
 		}
 	}
 	log.Printf("INFO: saved generic article: %s (%d images)", result.Title, len(result.Images))
-	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title), now)
+	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存文章：《%s》", result.Title))
 }
 
 // processKFImageForUser downloads a media file via KF API and saves it as an image message with user ID.
@@ -795,12 +805,8 @@ func isVideoURL(rawURL string) bool {
 	return false
 }
 
-// replyUser sends a feedback message to the user via KF.
-// Only replies to recent messages (within 5min) to avoid spamming on restart/batch processing.
-func (h *WeChatHandler) replyUser(openKFID, externalUserID, text string, sendTime time.Time) {
-	if time.Since(sendTime).Abs() > 5*time.Minute {
-		return
-	}
+// replyUser sends a feedback message to the user via KF. Errors are logged but not propagated.
+func (h *WeChatHandler) replyUser(openKFID, externalUserID, text string) {
 	if err := h.kf.SendTextMessage(openKFID, externalUserID, text); err != nil {
 		log.Printf("WARN: failed to reply user: %v", err)
 	}
@@ -844,7 +850,7 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, e
 			UserID:    userID,
 		}
 		h.store.InsertMessage(m)
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title), now)
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title))
 		return
 	}
 
@@ -866,7 +872,7 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, e
 			UserID:    userID,
 		}
 		h.store.InsertMessage(m)
-		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title), now)
+		h.replyUser(openKFID, externalUserID, fmt.Sprintf("⚠️ 视频下载失败：%s", title))
 		return
 	}
 	log.Printf("INFO: video downloaded: %s", filename)
@@ -893,7 +899,7 @@ func (h *WeChatHandler) downloadVideoForUser(videoURL, title, msgID, openKFID, e
 	if _, err := h.store.InsertMessage(m); err != nil {
 		log.Printf("ERROR: inserting video message: %v", err)
 	}
-	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存视频：%s", title), now)
+	h.replyUser(openKFID, externalUserID, fmt.Sprintf("✅ 已保存视频：%s", title))
 }
 
 // mediaExtFromContentType returns a file extension based on content-type.
