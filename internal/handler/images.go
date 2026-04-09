@@ -48,6 +48,15 @@ func (h *ImagesHandler) ServeImage(c *gin.Context) {
 
 // ServeVideo handles GET /api/videos/:filename — serves a stored video file.
 func (h *ImagesHandler) ServeVideo(c *gin.Context) {
+	apiKey := c.Query("apikey")
+	if apiKey != h.masterAPIKey {
+		user, err := h.store.GetUserByAPIKey(apiKey)
+		if err != nil || user == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+			return
+		}
+	}
+
 	rawFilename := c.Param("filename")
 	filename := filepath.Base(rawFilename)
 	videoPath := filepath.Join(h.store.DataDir(), "videos", filename)

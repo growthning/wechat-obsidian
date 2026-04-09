@@ -23,6 +23,12 @@ func TestIsVideoURL(t *testing.T) {
 		{"https://weibo.com/tv/show/123", true},
 		{"https://www.toutiao.com/video/123", true},
 
+		// X/Twitter non-video URLs should NOT match
+		{"https://x.com/about", false},
+		{"https://x.com/settings", false},
+		{"https://x.com/i/lists/123", false},
+		{"https://twitter.com/explore", false},
+
 		// Non-video URLs
 		{"https://www.example.com/article", false},
 		{"https://mp.weixin.qq.com/s/abc", false},

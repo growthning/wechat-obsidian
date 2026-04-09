@@ -253,6 +253,27 @@ func (s *Store) CleanupSynced(retentionDays int) (int, error) {
 	}
 	rows.Close()
 
+	// 1b. Query video filenames for video messages to delete
+	videoRows, err := tx.Query(
+		`SELECT filename FROM messages
+		 WHERE type = 'video' AND filename != '' AND synced = 1
+		 AND created_at < datetime('now', '-' || CAST(? AS TEXT) || ' days')`,
+		retentionDays,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("query video filenames: %w", err)
+	}
+	var videoFilenames []string
+	for videoRows.Next() {
+		var f string
+		if err := videoRows.Scan(&f); err != nil {
+			videoRows.Close()
+			return 0, fmt.Errorf("scan video filename: %w", err)
+		}
+		videoFilenames = append(videoFilenames, f)
+	}
+	videoRows.Close()
+
 	// 2. Delete attachments
 	_, err = tx.Exec(
 		`DELETE FROM attachments WHERE message_id IN (
@@ -282,6 +303,14 @@ func (s *Store) CleanupSynced(retentionDays int) (int, error) {
 		path := s.ImagePath(fname)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			log.Printf("WARN: cleanup failed to remove image %s: %v", path, err)
+		}
+	}
+
+	// 5. Delete video files from disk (best-effort)
+	for _, fname := range videoFilenames {
+		path := filepath.Join(s.dataDir, "videos", fname)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("WARN: cleanup failed to remove video %s: %v", path, err)
 		}
 	}
 

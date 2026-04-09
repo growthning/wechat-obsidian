@@ -190,7 +190,7 @@ func (h *WeChatHandler) processMessage(msg *wechat.IncomingMessage, rawXML strin
 	case "link":
 		cleanedURL := cleanURL(msg.LinkURL)
 		if strings.Contains(msg.LinkURL, "mp.weixin.qq.com") {
-			go h.fetchArticle(msg.LinkURL, msg.LinkTitle, rawXML, now)
+			go h.fetchArticle(msg.LinkURL, msg.LinkTitle, "", now)
 		} else {
 			go h.fetchGenericOrMemo(cleanedURL, msg.LinkTitle, "", now)
 		}
@@ -233,6 +233,9 @@ func (h *WeChatHandler) fetchArticle(url, title, msgID string, now time.Time) {
 	if err != nil {
 		log.Printf("ERROR: inserting article message: %v", err)
 		return
+	}
+	if dbID == 0 {
+		return // duplicate message, skip attachments
 	}
 
 	for _, imgFilename := range result.Images {
@@ -281,6 +284,9 @@ func (h *WeChatHandler) fetchGenericOrMemo(url, title, msgID string, now time.Ti
 	if err != nil {
 		log.Printf("ERROR: inserting generic article: %v", err)
 		return
+	}
+	if dbID == 0 {
+		return // duplicate message, skip attachments
 	}
 	for _, img := range result.Images {
 		att := &model.Attachment{
@@ -528,6 +534,9 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externa
 		log.Printf("ERROR: inserting article message: %v", err)
 		return
 	}
+	if dbID == 0 {
+		return // duplicate message, skip attachments
+	}
 
 	for _, imgFilename := range result.Images {
 		att := &model.Attachment{
@@ -583,6 +592,9 @@ func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openK
 		log.Printf("ERROR: inserting generic article: %v", err)
 		return
 	}
+	if dbID == 0 {
+		return // duplicate message, skip attachments
+	}
 	for _, img := range result.Images {
 		att := &model.Attachment{
 			MessageID:   dbID,
@@ -616,7 +628,7 @@ func (h *WeChatHandler) processKFImageForUser(mediaID, datePrefix string, now ti
 	}
 
 	ext := mediaExtFromContentType(contentType)
-	filename := fmt.Sprintf("img-%s-%s%s", datePrefix, mediaID[:8], ext)
+	filename := fmt.Sprintf("img-%s-%s%s", datePrefix, truncateStr(mediaID, 8), ext)
 
 	if err := h.fetcher.SaveFile(filename, data); err != nil {
 		log.Printf("ERROR: saving KF image %s: %v", filename, err)
@@ -665,7 +677,7 @@ func (h *WeChatHandler) processKFImage(mediaID, datePrefix string, now time.Time
 	}
 
 	ext := mediaExtFromContentType(contentType)
-	filename := fmt.Sprintf("img-%s-%s%s", datePrefix, mediaID[:8], ext)
+	filename := fmt.Sprintf("img-%s-%s%s", datePrefix, truncateStr(mediaID, 8), ext)
 
 	if err := h.fetcher.SaveFile(filename, data); err != nil {
 		log.Printf("ERROR: saving KF image %s: %v", filename, err)
@@ -758,7 +770,10 @@ func resolveShortURL(rawURL string) string {
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse // don't follow, just get the redirect
+			if len(via) >= 5 {
+				return http.ErrUseLastResponse
+			}
+			return nil // follow redirects up to 5 hops
 		},
 	}
 	resp, err := client.Head(rawURL)
@@ -767,8 +782,9 @@ func resolveShortURL(rawURL string) string {
 	}
 	defer resp.Body.Close()
 
-	if loc := resp.Header.Get("Location"); loc != "" {
-		return loc
+	// resp.Request.URL is the final URL after all redirects
+	if resp.Request != nil && resp.Request.URL != nil {
+		return resp.Request.URL.String()
 	}
 	return rawURL
 }
@@ -795,7 +811,6 @@ func isVideoURL(rawURL string) bool {
 		"tiktok.com",
 		"ixigua.com",
 		"weibo.com/tv",
-		"x.com", "twitter.com",
 	}
 	lower := strings.ToLower(rawURL)
 	for _, host := range videoHosts {
@@ -805,6 +820,11 @@ func isVideoURL(rawURL string) bool {
 	}
 	// Toutiao video URLs
 	if strings.Contains(lower, "toutiao.com/video/") {
+		return true
+	}
+	// X/Twitter - only match tweet URLs (contain /status/)
+	if (strings.Contains(lower, "x.com/") || strings.Contains(lower, "twitter.com/")) &&
+		strings.Contains(lower, "/status/") {
 		return true
 	}
 	return false
