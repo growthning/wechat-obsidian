@@ -1,13 +1,30 @@
 # WeChat-Obsidian Sync
 
-Self-hosted tool to sync content from Enterprise WeChat to your Obsidian vault.
+Self-hosted tool to sync content from Enterprise WeChat (企业微信) to your Obsidian vault. Forward articles, videos, images, and messages to a WeChat customer service account, and they'll automatically appear in your Obsidian notes.
 
 ## Features
 
-- Forward WeChat messages (text, images, files, chat records) to Obsidian
-- Auto-fetch WeChat article full-text as Markdown with images
-- Obsidian plugin polls for new content every 10 seconds
-- Single binary deployment, SQLite storage, zero external dependencies
+- **Article extraction** — WeChat public account articles with full-text Markdown and images
+- **Generic web scraping** — Three-tier fallback: trafilatura → Jina Reader → yt-dlp metadata, covering most websites
+- **Video download** — B站, YouTube, 抖音, X/Twitter, 西瓜/头条, TikTok, and more (powered by yt-dlp)
+- **Multi-format sync** — Text, images, links, 视频号 (Channels), files
+- **Smart URL handling** — Short link resolution (b23.tv, t.co, bit.ly), tracking param cleanup
+- **Real-time feedback** — Instant acknowledgment + completion notification via WeChat
+- **Multi-user support** — Each user gets a unique API key, data is isolated
+- **Obsidian daily notes** — Messages organized by date, articles saved as standalone Markdown files
+- **Single binary, zero deps** — Go server + SQLite, no external database needed
+
+## Architecture
+
+```
+[WeChat] → forward content → [Enterprise WeChat KF]
+                                      ↓ callback
+                              [Go Server] → process → SQLite
+                                                         ↓
+[Obsidian Plugin] ← poll /api/sync every 10s ← messages + articles
+        ↓
+  Write to vault (daily notes + article files)
+```
 
 ## Quick Start
 
@@ -15,10 +32,9 @@ Self-hosted tool to sync content from Enterprise WeChat to your Obsidian vault.
 
 ```bash
 # Build
-cd wechat-obsidian
 go build -o server ./cmd/server
 
-# Edit config
+# Configure
 cp config.yaml my-config.yaml
 vim my-config.yaml
 
@@ -26,32 +42,41 @@ vim my-config.yaml
 ./server --config my-config.yaml
 ```
 
-Or with Docker:
-
-```bash
-docker build -t wechat-obsidian .
-docker run -d -p 8900:8900 -v ./data:/app/data wechat-obsidian
-```
-
 ### 2. Enterprise WeChat Setup
 
 1. Register at [work.weixin.qq.com](https://work.weixin.qq.com)
-2. Create a self-built application (自建应用)
-3. Set callback URL to `https://your-vps.com:8900/api/wechat/callback`
+2. Create a Customer Service account (微信客服)
+3. Set callback URL to `https://your-server:8900/api/wechat/callback`
 4. Copy CorpID, Secret, Token, EncodingAESKey to `config.yaml`
+5. Add the KF account configuration (kf_secret, kf_token, kf_encoding_aes_key)
 
-### 3. Obsidian Plugin
+### 3. Install Obsidian Plugin
 
-1. Copy `obsidian-plugin/main.js` and `obsidian-plugin/manifest.json` to your vault's `.obsidian/plugins/wechat-sync/`
-2. Enable the plugin in Obsidian Settings → Community Plugins
-3. Configure server URL and API key in plugin settings
+**Option A: BRAT (recommended, auto-updates)**
+
+1. Install [Obsidian42 - BRAT](https://github.com/TfTHacker/obsidian42-brat)
+2. BRAT Settings → Add Beta Plugin → `growthning/wechat-obsidian`
+3. Enable "WeChat Sync" in Community Plugins
+4. Configure server URL and API key in plugin settings
+
+**Option B: Manual**
+
+1. Download `main.js` and `manifest.json` from [Releases](https://github.com/growthning/wechat-obsidian/releases)
+2. Create `.obsidian/plugins/wechat-sync/` in your vault
+3. Copy both files into that directory
+4. Restart Obsidian, enable the plugin, configure server URL and API key
+
+### 4. Get Your API Key
+
+Send "注册" to the WeChat KF account. You'll receive your API key in the reply.
 
 ## Configuration
 
 ```yaml
 server:
   port: 8900
-  api_key: "change-me-to-a-random-string"
+  api_key: "your-master-api-key"
+  base_url: "http://your-server:8900"
 
 wechat:
   corp_id: "ww..."
@@ -59,9 +84,13 @@ wechat:
   secret: "your-secret"
   token: "your-token"
   encoding_aes_key: "your-encoding-aes-key"
+  kf_secret: "your-kf-secret"
+  kf_token: "your-kf-token"
+  kf_encoding_aes_key: "your-kf-encoding-aes-key"
 
 storage:
   data_dir: "./data"
+  cleanup_days: 30
 
 article:
   timeout: 30s
@@ -70,28 +99,43 @@ article:
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/wechat/callback` | GET/POST | Enterprise WeChat callback |
-| `/api/sync` | GET | Fetch unsynced messages |
-| `/api/sync/ack` | POST | Acknowledge synced messages |
-| `/api/images/:filename` | GET | Download image |
-| `/health` | GET | Health check |
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/wechat/callback` | GET/POST | WeChat signature | Enterprise WeChat callback |
+| `/api/sync` | GET | API key | Fetch unsynced messages |
+| `/api/sync/ack` | POST | API key | Acknowledge synced messages |
+| `/api/images/:filename` | GET | API key | Download image |
+| `/api/videos/:filename` | GET | API key | Download video |
+| `/api/save` | POST | API key | Save a URL manually |
+| `/health` | GET | None | Health check |
 
-## How It Works
+## Content Processing
 
+| Content Type | Processing | Output |
+|-------------|-----------|--------|
+| WeChat article link | Full-text extraction with images | Standalone .md file |
+| Generic web link | trafilatura → Jina Reader → yt-dlp metadata | Standalone .md file or bookmark |
+| B站/YouTube/抖音/X video | yt-dlp download | Video file + daily note entry |
+| Text message | Direct save | Daily note entry |
+| Image | Download via WeChat API | Image file + daily note entry |
+| 视频号 (Channels) | Metadata extraction | Daily note entry |
+
+## Server Requirements
+
+- Go 1.21+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) installed on the server (for video download and metadata fallback)
+- Public IP with port 8900 accessible (for WeChat callback)
+
+## Deploy
+
+```bash
+# Build for Linux server
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o server ./cmd/server
+
+# Deploy (see deploy.sh for a full example)
+scp server your-server:/path/to/wechat-obsidian/
+ssh your-server "systemctl restart wechat-obsidian"
 ```
-[Enterprise WeChat] → POST callback → [Go Server] → SQLite
-                                                        ↓
-[Obsidian Plugin] ← GET /api/sync (poll every 10s) ← messages
-        ↓
-  Write .md files to vault
-```
-
-1. You forward messages/articles to Enterprise WeChat
-2. WeChat pushes the message to your server's callback URL
-3. Server processes the message (fetches article full-text if needed)
-4. Obsidian plugin polls for new messages and writes them to your vault
 
 ## License
 
