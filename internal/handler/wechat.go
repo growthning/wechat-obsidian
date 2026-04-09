@@ -796,9 +796,9 @@ func isVideoURL(rawURL string) bool {
 }
 
 // replyUser sends a feedback message to the user via KF.
-// Only replies to recent messages (within 60s) to avoid spamming on restart/batch processing.
+// Only replies to recent messages (within 5min) to avoid spamming on restart/batch processing.
 func (h *WeChatHandler) replyUser(openKFID, externalUserID, text string, sendTime time.Time) {
-	if time.Since(sendTime).Abs() > 60*time.Second {
+	if time.Since(sendTime).Abs() > 5*time.Minute {
 		return
 	}
 	if err := h.kf.SendTextMessage(openKFID, externalUserID, text); err != nil {
