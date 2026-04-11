@@ -88,6 +88,17 @@ func (f *Fetcher) FetchArticle(url string, sendTime ...time.Time) (*ArticleResul
 		title = strings.TrimSpace(t)
 	}
 
+	// Detect WeChat anti-bot page (环境异常/验证) — fallback to Jina Reader
+	pageText := doc.Text()
+	if strings.Contains(pageText, "环境异常") || strings.Contains(pageText, "完成验证") || title == "" {
+		log.Printf("INFO: WeChat anti-bot detected for %s, falling back to Jina Reader", url)
+		now := time.Now()
+		if len(sendTime) > 0 && !sendTime[0].IsZero() {
+			now = sendTime[0]
+		}
+		return f.fetchWithJina(url, now)
+	}
+
 	// Extract source/author
 	source := ""
 	if s := doc.Find(".rich_media_meta_nickname a").First().Text(); s != "" {

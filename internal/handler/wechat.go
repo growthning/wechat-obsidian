@@ -457,7 +457,9 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 	}
 
 	// Reply immediately to let user know we received the message
+	log.Printf("DEBUG: about to reply user %s", msg.ExternalUserID)
 	h.replyUser(msg.OpenKFID, msg.ExternalUserID, "✅ 已收到，正在处理...")
+	log.Printf("DEBUG: replied, now processing msgType=%s", msg.MsgType)
 
 	switch msg.MsgType {
 	case "text":
