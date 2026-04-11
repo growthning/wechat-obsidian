@@ -321,13 +321,17 @@ func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix strin
 			return
 		}
 
-		// On first sync (no cursor), skip all historical messages — only save cursor
+		// On first sync (no cursor), skip historical messages — only save cursor
+		// But still process events and registration commands
 		if isFirstSync {
 			log.Printf("INFO: first sync for %s, skipping %d historical messages, saving cursor", openKFID, len(resp.MsgList))
-			// Still process events (for welcome_code) so registration works
 			for _, msg := range resp.MsgList {
 				if msg.MsgType == "event" && msg.Event != nil {
 					h.processKFEventMsg(&msg)
+				}
+				// Process registration command even on first sync
+				if msg.Origin == 3 && msg.MsgType == "text" && msg.Text != nil && msg.Text.Content == "注册" {
+					h.processKFMessage(&msg, datePrefix)
 				}
 			}
 			if resp.NextCursor != "" {
