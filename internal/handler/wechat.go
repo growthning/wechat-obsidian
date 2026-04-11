@@ -466,9 +466,27 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 		if msg.Text == nil {
 			return
 		}
+		// Check if text contains a URL
+		textContent := strings.TrimSpace(msg.Text.Content)
+
+		// Check if text is a WeChat article link
+		if strings.Contains(textContent, "mp.weixin.qq.com") {
+			articleURL := textContent
+			// Extract URL if mixed with other text
+			if idx := strings.Index(textContent, "http"); idx >= 0 {
+				articleURL = strings.TrimSpace(textContent[idx:])
+				// Trim trailing non-URL chars
+				if spaceIdx := strings.IndexAny(articleURL, " \n\t"); spaceIdx > 0 {
+					articleURL = articleURL[:spaceIdx]
+				}
+			}
+			go h.fetchArticleForUser(articleURL, "", msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
+			return
+		}
+
 		// Check if text contains a video URL
-		if videoURL := extractVideoURL(msg.Text.Content); videoURL != "" {
-			title := strings.TrimSpace(msg.Text.Content)
+		if videoURL := extractVideoURL(textContent); videoURL != "" {
+			title := textContent
 			// Extract title before the URL
 			if idx := strings.Index(title, "http"); idx > 0 {
 				title = strings.TrimSpace(title[:idx])
@@ -477,6 +495,21 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 			go h.downloadVideoForUser(videoURL, title, msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
 			return
 		}
+
+		// Check if text contains a generic URL — treat as article
+		if strings.Contains(textContent, "http://") || strings.Contains(textContent, "https://") {
+			linkURL := textContent
+			if idx := strings.Index(textContent, "http"); idx >= 0 {
+				linkURL = strings.TrimSpace(textContent[idx:])
+				if spaceIdx := strings.IndexAny(linkURL, " \n\t"); spaceIdx > 0 {
+					linkURL = linkURL[:spaceIdx]
+				}
+			}
+			cleanedURL := cleanURL(linkURL)
+			go h.fetchGenericOrMemoForUser(cleanedURL, "", "", msg.MsgID, msg.OpenKFID, msg.ExternalUserID, now, user.ID)
+			return
+		}
+
 		m := &model.Message{
 			MsgID:     msg.MsgID,
 			Type:      "memo",
