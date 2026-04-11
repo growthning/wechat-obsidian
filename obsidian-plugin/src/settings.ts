@@ -9,6 +9,7 @@ export interface WeChatSyncSettings {
   articlesFolder: string;
   attachmentsFolder: string;
   lastSyncedId: number;
+  deviceId: string;
 }
 
 export const DEFAULT_SETTINGS: WeChatSyncSettings = {
@@ -19,6 +20,7 @@ export const DEFAULT_SETTINGS: WeChatSyncSettings = {
   articlesFolder: "raw/articles",
   attachmentsFolder: "raw/attachments",
   lastSyncedId: 0,
+  deviceId: "",
 };
 
 export class WeChatSyncSettingTab extends PluginSettingTab {

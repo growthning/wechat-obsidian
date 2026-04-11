@@ -44,5 +44,6 @@ type MessageWithImages struct {
 }
 
 type AckRequest struct {
-	LastID int64 `json:"last_id"`
+	LastID   int64  `json:"last_id"`
+	DeviceID string `json:"device_id,omitempty"`
 }

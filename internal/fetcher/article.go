@@ -56,16 +56,26 @@ type ArticleResult struct {
 }
 
 // FetchArticle fetches a WeChat article URL and returns an ArticleResult.
+// Falls back to Jina Reader if direct fetch fails or is blocked by WeChat anti-bot.
 func (f *Fetcher) FetchArticle(url string, sendTime ...time.Time) (*ArticleResult, error) {
+	now := time.Now()
+	if len(sendTime) > 0 && !sendTime[0].IsZero() {
+		now = sendTime[0]
+	}
+
+	// Use a short timeout for direct WeChat fetch (10s) — if blocked, fall back fast
+	directClient := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+		log.Printf("INFO: direct fetch request failed for %s, falling back to Jina", url)
+		return f.fetchWithJina(url, now)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-	resp, err := f.client.Do(req)
+	resp, err := directClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching article: %w", err)
+		log.Printf("INFO: direct fetch failed for %s: %v, falling back to Jina", url, err)
+		return f.fetchWithJina(url, now)
 	}
 	defer resp.Body.Close()
 
@@ -111,10 +121,6 @@ func (f *Fetcher) FetchArticle(url string, sendTime ...time.Time) (*ArticleResul
 	bodyNode := doc.Find("div#js_content").First()
 
 	// Download images (up to maxImages)
-	now := time.Now()
-	if len(sendTime) > 0 && !sendTime[0].IsZero() {
-		now = sendTime[0]
-	}
 	// Use URL hash to make filenames unique per article
 	urlHash := md5.Sum([]byte(url))
 	imgPrefix := now.Format("20060102") + "-" + hex.EncodeToString(urlHash[:4])

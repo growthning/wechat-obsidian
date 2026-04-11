@@ -59,7 +59,16 @@ func (h *SyncHandler) GetMessages(c *gin.Context) {
 		sinceID = parsed
 	}
 
-	messages, hasMore, err := h.store.GetUnsynced(sinceID, 50, userID)
+	deviceID := c.Query("device")
+
+	var messages []model.MessageWithImages
+	var hasMore bool
+
+	if deviceID != "" {
+		messages, hasMore, err = h.store.GetUnsyncedForDevice(deviceID, userID, 50)
+	} else {
+		messages, hasMore, err = h.store.GetUnsynced(sinceID, 50, userID)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch messages"})
 		return
@@ -89,7 +98,12 @@ func (h *SyncHandler) AckMessages(c *gin.Context) {
 		return
 	}
 
-	if err := h.store.AckMessages(req.LastID, userID); err != nil {
+	if req.DeviceID != "" {
+		err = h.store.AckMessagesForDevice(req.DeviceID, req.LastID, userID)
+	} else {
+		err = h.store.AckMessages(req.LastID, userID)
+	}
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ack messages"})
 		return
 	}

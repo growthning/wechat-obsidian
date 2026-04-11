@@ -1,7 +1,7 @@
 {
   "id": "wechat-sync",
   "name": "WeChat Sync",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minAppVersion": "1.0.0",
   "description": "Sync content from Enterprise WeChat to your Obsidian vault",
   "author": "wechat-obsidian",

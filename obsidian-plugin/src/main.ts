@@ -14,9 +14,14 @@ export default class WeChatSyncPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    if (!this.settings.deviceId) {
+      this.settings.deviceId = this.generateUUID();
+      await this.saveSettings();
+      console.log("WeChat Sync: generated deviceId=" + this.settings.deviceId);
+    }
     this.addSettingTab(new WeChatSyncSettingTab(this.app, this));
     this.startPolling();
-    console.log("WeChat Sync plugin loaded");
+    console.log("WeChat Sync plugin loaded, deviceId=" + this.settings.deviceId);
   }
 
   onunload(): void {
@@ -68,6 +73,14 @@ export default class WeChatSyncPlugin extends Plugin {
     this.startPolling();
   }
 
+  private generateUUID(): string {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
   private async sync(): Promise<void> {
     if (this.syncing) {
       return;
@@ -81,7 +94,7 @@ export default class WeChatSyncPlugin extends Plugin {
     console.log("WeChat Sync: syncing, lastSyncedId=" + this.settings.lastSyncedId);
 
     try {
-      const api = new ApiClient(this.settings.serverUrl, this.settings.apiKey);
+      const api = new ApiClient(this.settings.serverUrl, this.settings.apiKey, this.settings.deviceId);
       const writer = new VaultWriter(this.app, this.settings, api);
 
       let hasMore = true;

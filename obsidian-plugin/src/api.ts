@@ -17,25 +17,32 @@ export interface SyncResponse {
 }
 
 export class ApiClient {
-  constructor(private serverUrl: string, private apiKey: string) {}
+  constructor(private serverUrl: string, private apiKey: string, private deviceId?: string) {}
 
   private baseUrl(): string {
     return this.serverUrl.replace(/\/+$/, "");
   }
 
   async fetchMessages(sinceId: number): Promise<SyncResponse> {
-    const url = `${this.baseUrl()}/api/sync?since=${sinceId}&apikey=${encodeURIComponent(this.apiKey)}`;
+    let url = `${this.baseUrl()}/api/sync?since=${sinceId}&apikey=${encodeURIComponent(this.apiKey)}`;
+    if (this.deviceId) {
+      url += `&device=${encodeURIComponent(this.deviceId)}`;
+    }
     const response = await requestUrl({ url, method: "GET" });
     return response.json as SyncResponse;
   }
 
   async ackMessages(lastId: number): Promise<void> {
     const url = `${this.baseUrl()}/api/sync/ack?apikey=${encodeURIComponent(this.apiKey)}`;
+    const body: Record<string, unknown> = { last_id: lastId };
+    if (this.deviceId) {
+      body.device_id = this.deviceId;
+    }
     await requestUrl({
       url,
       method: "POST",
       contentType: "application/json",
-      body: JSON.stringify({ last_id: lastId }),
+      body: JSON.stringify(body),
     });
   }
 

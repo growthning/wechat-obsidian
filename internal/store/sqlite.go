@@ -84,6 +84,15 @@ func (s *Store) migrate() error {
 	// KV store for persistent state (e.g. KF sync cursor)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
 
+	// Device-independent sync tracking
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS device_acks (
+		device_id TEXT NOT NULL,
+		user_id INTEGER NOT NULL,
+		last_acked_id INTEGER NOT NULL DEFAULT 0,
+		last_acked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (device_id, user_id)
+	)`)
+
 	return nil
 }
 
@@ -232,6 +241,84 @@ func (s *Store) AckMessages(lastID int64, userID int64) error {
 		return err
 	}
 	_, err := s.db.Exec(`UPDATE messages SET synced = 1 WHERE id <= ?`, lastID)
+	return err
+}
+
+// GetUnsyncedForDevice returns messages where id > device's last_acked_id.
+func (s *Store) GetUnsyncedForDevice(deviceID string, userID int64, limit int) ([]model.MessageWithImages, bool, error) {
+	// Get the device's last acked id
+	var lastAckedID int64
+	err := s.db.QueryRow(
+		`SELECT last_acked_id FROM device_acks WHERE device_id = ? AND user_id = ?`,
+		deviceID, userID,
+	).Scan(&lastAckedID)
+	if err == sql.ErrNoRows {
+		lastAckedID = 0
+	} else if err != nil {
+		return nil, false, err
+	}
+
+	query := `SELECT id, type, content, title, filename, source_url, raw_xml, synced, created_at
+		 FROM messages
+		 WHERE id > ?`
+	args := []interface{}{lastAckedID}
+	if userID > 0 {
+		query += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY id ASC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var msgs []model.MessageWithImages
+	for rows.Next() {
+		var m model.Message
+		var synced int
+		if err := rows.Scan(
+			&m.ID, &m.Type, &m.Content, &m.Title, &m.Filename,
+			&m.SourceURL, &m.RawXML, &synced, &m.CreatedAt,
+		); err != nil {
+			return nil, false, err
+		}
+		m.Synced = synced != 0
+		msgs = append(msgs, model.MessageWithImages{Message: m})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
+	}
+
+	// Load attachment filenames for each message
+	for i := range msgs {
+		images, err := s.getAttachmentFilenames(msgs[i].ID)
+		if err != nil {
+			return nil, false, err
+		}
+		msgs[i].Images = images
+	}
+
+	return msgs, hasMore, nil
+}
+
+// AckMessagesForDevice updates the device_acks table for a specific device.
+func (s *Store) AckMessagesForDevice(deviceID string, lastID int64, userID int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO device_acks (device_id, user_id, last_acked_id, last_acked_at)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(device_id, user_id) DO UPDATE SET
+		   last_acked_id = MAX(last_acked_id, ?),
+		   last_acked_at = CURRENT_TIMESTAMP`,
+		deviceID, userID, lastID, lastID,
+	)
 	return err
 }
 
