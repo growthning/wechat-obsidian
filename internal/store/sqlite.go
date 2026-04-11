@@ -113,6 +113,16 @@ func (s *Store) MessageExists(msgID string) bool {
 	return count > 0
 }
 
+// ArticleExistsByURL checks if an article with the given source_url already exists.
+func (s *Store) ArticleExistsByURL(url string) bool {
+	if url == "" {
+		return false
+	}
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE source_url = ? AND type = 'article'`, url).Scan(&count)
+	return count > 0
+}
+
 func (s *Store) InsertMessage(msg *model.Message) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO messages (msg_id, type, content, title, filename, source_url, raw_xml, synced, created_at, user_id)

@@ -537,6 +537,12 @@ func (h *WeChatHandler) processKFMessage(msg *wechat.KFMessage, datePrefix strin
 
 // fetchArticleForUser fetches a WeChat article and saves it with user ID.
 func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
+	// Deduplicate by URL — skip if same article already saved
+	if h.store.ArticleExistsByURL(url) {
+		log.Printf("INFO: article already exists, skipping: %s", url)
+		h.replyUser(openKFID, externalUserID, "📌 这篇文章已经保存过了")
+		return
+	}
 	result, err := h.fetcher.FetchArticle(url)
 	if err != nil {
 		log.Printf("ERROR: fetching article %s: %v", url, err)
@@ -591,6 +597,11 @@ func (h *WeChatHandler) fetchArticleForUser(url, title, msgID, openKFID, externa
 
 // fetchGenericOrMemoForUser tries to fetch a URL as an article with user ID; falls back to memo.
 func (h *WeChatHandler) fetchGenericOrMemoForUser(url, title, desc, msgID, openKFID, externalUserID string, now time.Time, userID int64) {
+	if h.store.ArticleExistsByURL(url) {
+		log.Printf("INFO: article already exists, skipping: %s", url)
+		h.replyUser(openKFID, externalUserID, "📌 这篇文章已经保存过了")
+		return
+	}
 	result, err := h.fetcher.FetchGenericArticle(url)
 	if err != nil {
 		log.Printf("INFO: generic fetch failed for %s: %v, saving as memo", url, err)
