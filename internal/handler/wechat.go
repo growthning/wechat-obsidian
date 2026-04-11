@@ -312,12 +312,34 @@ func (h *WeChatHandler) processKFEvent(callbackToken, openKFID, datePrefix strin
 	// Restore cursor from persistent storage to avoid reprocessing messages after restart
 	cursorKey := "kf_cursor_" + openKFID
 	cursor, _ := h.store.GetKV(cursorKey)
+	isFirstSync := cursor == ""
 
 	for {
 		resp, err := h.kf.SyncMessages(callbackToken, cursor, openKFID)
 		if err != nil {
 			log.Printf("ERROR: syncing KF messages: %v", err)
 			return
+		}
+
+		// On first sync (no cursor), skip all historical messages — only save cursor
+		if isFirstSync {
+			log.Printf("INFO: first sync for %s, skipping %d historical messages, saving cursor", openKFID, len(resp.MsgList))
+			// Still process events (for welcome_code) so registration works
+			for _, msg := range resp.MsgList {
+				if msg.MsgType == "event" && msg.Event != nil {
+					h.processKFEventMsg(&msg)
+				}
+			}
+			if resp.NextCursor != "" {
+				if err := h.store.SetKV(cursorKey, resp.NextCursor); err != nil {
+					log.Printf("ERROR: persisting KF cursor: %v", err)
+				}
+			}
+			if resp.HasMore != 1 || resp.NextCursor == "" {
+				break
+			}
+			cursor = resp.NextCursor
+			continue
 		}
 
 		// Process events first (for welcome_code), then customer messages
